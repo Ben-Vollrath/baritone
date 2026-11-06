@@ -771,6 +771,15 @@ public final class Settings {
      */
     public final Setting<Boolean> smoothLook = new Setting<>(false);
 
+    /** Gradual mouse-quantized ground rotations, shared by movement and block interaction. */
+    public final Setting<Boolean> smoothMovement = new Setting<>(false);
+
+    /** Maximum ground yaw/pitch change in degrees per game tick. */
+    public final Setting<Double> smoothMovementMaxTurn = new Setting<>(18.0);
+
+    /** Maximum change of turn speed per tick, except when stopping at a changed target. */
+    public final Setting<Double> smoothMovementAcceleration = new Setting<>(3.0);
+
     /**
      * Same as {@link #smoothLook} but for elytra flying.
      */

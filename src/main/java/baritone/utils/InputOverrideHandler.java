@@ -90,8 +90,9 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
         if (isInputForcedDown(Input.CLICK_LEFT)) {
             setInputForceState(Input.CLICK_RIGHT, false);
         }
-        blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT));
-        blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT));
+        boolean interactionReady = baritone.getLookBehavior().isReadyForInteraction();
+        blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT) && interactionReady);
+        blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT) && interactionReady);
 
         if (inControl()) {
             if (ctx.player().input.getClass() != PlayerMovementInput.class) {

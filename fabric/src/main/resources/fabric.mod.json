@@ -3,14 +3,14 @@
   "id": "baritone",
   "version": "${version}",
 
-  "name": "Baritone",
+  "name": "Baritone (Drift)",
   "description": "Google Maps for Blockgame",
   "authors": [
-    "leijurv", "Brady"
+    "leijurv", "Brady", "DriftClient contributors"
   ],
   "contact": {
-    "homepage": "https://github.com/cabaletta/baritone",
-    "sources": "https://github.com/cabaletta/baritone",
+    "homepage": "https://github.com/Ben-Vollrath/baritone/tree/drift/26.2-smooth-movement",
+    "sources": "https://github.com/Ben-Vollrath/baritone/tree/drift/26.2-smooth-movement",
     "issues": "https://github.com/cabaletta/baritone/issues"
   },
 

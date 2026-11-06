@@ -26,6 +26,7 @@ import baritone.api.event.events.*;
 import baritone.api.utils.IPlayerContext;
 import baritone.api.utils.Rotation;
 import baritone.behavior.look.ForkableRandom;
+import baritone.behavior.look.SmoothRotation;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 
 import java.util.ArrayDeque;
@@ -65,7 +66,15 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
     @Override
     public void updateTarget(Rotation rotation, boolean blockInteract) {
-        this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract));
+        this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract), blockInteract);
+    }
+
+    /** Wait for the actual crosshair to arrive before breaking/placing along a turn. */
+    public boolean isReadyForInteraction() {
+        if (!Baritone.settings().smoothMovement.value || target == null || !target.blockInteract || ctx.player().isFallFlying()) return true;
+        Rotation actual = ctx.playerRotations();
+        return Math.abs(Rotation.normalizeYaw(target.rotation.getYaw() - actual.getYaw())) <= 1.0
+                && Math.abs(target.rotation.getPitch() - actual.getPitch()) <= 1.0;
     }
 
     @Override
@@ -96,6 +105,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
                 this.prevRotation = new Rotation(ctx.player().getYRot(), ctx.player().getXRot());
                 final Rotation actual = this.processor.peekRotation(this.target.rotation);
+                this.processor.commit(this.processor.getPrevRotation(), actual);
                 ctx.player().setYRot(actual.getYaw());
                 ctx.player().setXRot(actual.getPitch());
                 break;
@@ -114,7 +124,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                     if (this.target.mode == Target.Mode.SERVER) {
                         ctx.player().setYRot(this.prevRotation.getYaw());
                         ctx.player().setXRot(this.prevRotation.getPitch());
-                    } else if (ctx.player().isFallFlying() ? Baritone.settings().elytraSmoothLook.value : Baritone.settings().smoothLook.value) {
+                    } else if (ctx.player().isFallFlying() ? Baritone.settings().elytraSmoothLook.value : Baritone.settings().smoothLook.value && !Baritone.settings().smoothMovement.value) {
                         ctx.player().setYRot((float) this.smoothYawBuffer.stream().mapToDouble(d -> d).average().orElse(this.prevRotation.getYaw()));
                         if (ctx.player().isFallFlying()) {
                             ctx.player().setXRot((float) this.smoothPitchBuffer.stream().mapToDouble(d -> d).average().orElse(this.prevRotation.getPitch()));
@@ -149,6 +159,10 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     public void onWorldEvent(WorldEvent event) {
         this.serverRotation = null;
         this.target = null;
+        this.prevRotation = null;
+        this.processor.reset();
+        this.smoothYawBuffer.clear();
+        this.smoothPitchBuffer.clear();
     }
 
     public void pig() {
@@ -177,6 +191,8 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
     private static final class AimProcessor extends AbstractAimProcessor {
 
+        private Rotation tickRotation;
+
         public AimProcessor(final IPlayerContext ctx) {
             super(ctx);
         }
@@ -184,7 +200,18 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         @Override
         protected Rotation getPrevRotation() {
             // Implementation will use LookBehavior.serverRotation
-            return ctx.playerRotations();
+            return tickRotation == null || !Baritone.settings().smoothMovement.value || ctx.player().isFallFlying()
+                    ? ctx.playerRotations() : tickRotation;
+        }
+
+        @Override
+        protected void onTickStarted() {
+            this.tickRotation = ctx.playerRotations();
+        }
+
+        @Override
+        protected void onReset() {
+            this.tickRotation = null;
         }
     }
 
@@ -194,6 +221,11 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         private final ForkableRandom rand;
         private double randomYawOffset;
         private double randomPitchOffset;
+        private double yawVelocity;
+        private double pitchVelocity;
+        private double pendingYawVelocity;
+        private double pendingPitchVelocity;
+        private boolean committed;
 
         public AbstractAimProcessor(IPlayerContext ctx) {
             this.ctx = ctx;
@@ -205,6 +237,11 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.rand = source.rand.fork();
             this.randomYawOffset = source.randomYawOffset;
             this.randomPitchOffset = source.randomPitchOffset;
+            this.yawVelocity = source.yawVelocity;
+            this.pitchVelocity = source.pitchVelocity;
+            this.pendingYawVelocity = source.pendingYawVelocity;
+            this.pendingPitchVelocity = source.pendingPitchVelocity;
+            this.committed = source.committed;
         }
 
         @Override
@@ -213,6 +250,25 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
             float desiredYaw = rotation.getYaw();
             float desiredPitch = rotation.getPitch();
+
+            if (Baritone.settings().smoothMovement.value && !ctx.player().isFallFlying()) {
+                double speed = positiveLimit(Baritone.settings().smoothMovementMaxTurn.value, 18.0);
+                double acceleration = positiveLimit(Baritone.settings().smoothMovementAcceleration.value, 3.0);
+                double yawStep = SmoothRotation.step(SmoothRotation.wrapDegrees(desiredYaw - prev.getYaw()), yawVelocity, speed, acceleration);
+                double pitchStep = SmoothRotation.step(Rotation.clampPitch(desiredPitch) - prev.getPitch(), pitchVelocity, speed, acceleration);
+                // Finish within half a mouse count instead of stalling in the proportional arrival zone.
+                double mouseCount = mouseToAngle(1);
+                if (Math.abs(SmoothRotation.wrapDegrees(desiredYaw - prev.getYaw())) <= 2 * mouseCount) {
+                    yawStep = SmoothRotation.wrapDegrees(desiredYaw - prev.getYaw());
+                }
+                if (Math.abs(desiredPitch - prev.getPitch()) <= 2 * mouseCount) {
+                    pitchStep = desiredPitch - prev.getPitch();
+                }
+                return new Rotation(
+                        calculateMouseMove(prev.getYaw(), prev.getYaw() + (float) yawStep),
+                        calculateMouseMove(prev.getPitch(), prev.getPitch() + (float) pitchStep)
+                ).clamp();
+            }
 
             // In other words, the target doesn't care about the pitch, so it used playerRotations().getPitch()
             // and it's safe to adjust it to a normal level
@@ -231,6 +287,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
         @Override
         public final void tick() {
+            this.yawVelocity = committed ? pendingYawVelocity : 0;
+            this.pitchVelocity = committed ? pendingPitchVelocity : 0;
+            committed = false;
             // randomLooking
             this.randomYawOffset = (this.rand.nextDouble() - 0.5) * Baritone.settings().randomLooking.value;
             this.randomPitchOffset = (this.rand.nextDouble() - 0.5) * Baritone.settings().randomLooking.value;
@@ -241,6 +300,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 random *= 4;
             }
             this.randomYawOffset += random * Baritone.settings().randomLooking113.value;
+            this.onTickStarted();
         }
 
         @Override
@@ -253,9 +313,33 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         @Override
         public Rotation nextRotation(final Rotation rotation) {
             final Rotation actual = this.peekRotation(rotation);
+            this.commit(this.getPrevRotation(), actual);
             this.tick();
             return actual;
         }
+
+        private static double positiveLimit(double value, double fallback) {
+            return Double.isFinite(value) && value > 0 ? value : fallback;
+        }
+
+        final void commit(Rotation previous, Rotation actual) {
+            this.pendingYawVelocity = SmoothRotation.wrapDegrees(actual.getYaw() - previous.getYaw());
+            this.pendingPitchVelocity = actual.getPitch() - previous.getPitch();
+            this.committed = true;
+        }
+
+        final void reset() {
+            this.yawVelocity = 0;
+            this.pitchVelocity = 0;
+            this.pendingYawVelocity = 0;
+            this.pendingPitchVelocity = 0;
+            this.committed = false;
+            this.onReset();
+        }
+
+        protected void onTickStarted() {}
+
+        protected void onReset() {}
 
         @Override
         public final ITickableAimProcessor fork() {
@@ -311,10 +395,12 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
 
         public final Rotation rotation;
         public final Mode mode;
+        public final boolean blockInteract;
 
-        public Target(Rotation rotation, Mode mode) {
+        public Target(Rotation rotation, Mode mode, boolean blockInteract) {
             this.rotation = rotation;
             this.mode = mode;
+            this.blockInteract = blockInteract;
         }
 
         enum Mode {

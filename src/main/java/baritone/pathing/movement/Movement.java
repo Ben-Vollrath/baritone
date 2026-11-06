@@ -137,6 +137,19 @@ public abstract class Movement implements IMovement, MovementHelper {
                         rotation,
                         currentState.getTarget().hasToForceRotations()));
         baritone.getInputOverrideHandler().clearAllKeys();
+        // Ground turns must finish before committing to a new direction. Never interrupt
+        // an airborne jump, fall, swim, or other movement that is unsafe to cancel.
+        if (Baritone.settings().smoothMovement.value && ctx.player().onGround() && safeToCancel()) {
+            currentState.getTarget().getRotation().ifPresent(rotation -> {
+                Rotation actual = baritone.getLookBehavior().getAimProcessor().peekRotation(rotation);
+                if (Math.abs(Rotation.normalizeYaw(rotation.getYaw() - actual.getYaw())) > 15) {
+                    for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT,
+                            Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT}) {
+                        currentState.setInput(input, false);
+                    }
+                }
+            });
+        }
         currentState.getInputStates().forEach((input, forced) -> {
             baritone.getInputOverrideHandler().setInputForceState(input, forced);
         });

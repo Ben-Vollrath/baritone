@@ -1,0 +1,43 @@
+plugins {
+    id 'net.fabricmc.fabric-loom'
+}
+
+group = 'com.vollrath.baritone'
+version = '1.19.0-drift.1'
+base { archivesName = 'baritone-drift-fabric' }
+
+repositories {
+    maven { url = 'https://babbaj.github.io/maven/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${rootProject.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${rootProject.loader_version}"
+    implementation include('dev.babbaj:nether-pathfinder:1.6')
+    compileOnly 'com.google.code.findbugs:jsr305:3.0.2'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+sourceSets {
+    main {
+        java.srcDirs = ['../src/api/java', '../src/main/java', '../src/launch/java', '../src/schematica_api/java']
+        resources.srcDirs = ['../src/main/resources', '../src/launch/resources', '../fabric/src/main/resources']
+    }
+    test { java.srcDirs = ['../src/test/java'] }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') { expand version: project.version }
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+    withSourcesJar()
+}
+tasks.withType(JavaCompile).configureEach { options.release = 25 }
+jar { from('../LICENSE') }
+
+// This module is a library mod; unqualified runClient must launch only DriftClient.
+tasks.matching { it.name in ['runClient', 'runServer'] }.configureEach { enabled = false }
