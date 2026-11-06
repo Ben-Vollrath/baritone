@@ -9,9 +9,9 @@ public class NaturalSteeringTest {
         int overshoots = 0;
         double largest = 0;
         for (long seed = 1; seed <= 200; seed++) {
-            ForkableRandom random = new ForkableRandom(seed);
-            double k = 0.11 + random.nextDouble() * .04, damping = .50 + random.nextDouble() * .14;
-            double speed = 18 * (.89 + random.nextDouble() * .28), limit = 3 * (1.60 + random.nextDouble() * .14);
+            var parameters = NaturalSteering.parameters(seed, 18, 3);
+            double k = parameters.stiffness(), damping = parameters.damping();
+            double speed = parameters.speedLimit(), limit = parameters.accelerationLimit();
             double position = 0, velocity = 0, acceleration = 0, peak = 0;
             for (int tick = 0; tick < 180; tick++) {
                 double next = NaturalSteering.step(180 - position, velocity, acceleration, k, damping, speed, limit);

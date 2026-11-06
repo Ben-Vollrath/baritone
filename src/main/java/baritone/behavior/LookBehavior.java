@@ -61,6 +61,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     private double renderYawVelocity, renderPitchVelocity, renderNextYawVelocity, renderNextPitchVelocity;
     private boolean renderControlled;
     private int interactionReadyTicks, lastInteractionTick = -1;
+    private Target settlingTarget;
+    private int settlingTicks;
+    private Rotation requestedRotation;
 
     public LookBehavior(Baritone baritone) {
         super(baritone);
@@ -72,6 +75,11 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     @Override
     public void updateTarget(Rotation rotation, boolean blockInteract) {
         this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract), blockInteract);
+        this.requestedRotation = rotation;
+        if (Baritone.settings().naturalMovement.value && !ctx.player().isFallFlying() && this.target.mode == Target.Mode.CLIENT) {
+            this.settlingTarget = this.target;
+            this.settlingTicks = 40;
+        }
     }
 
     /** Wait for the actual crosshair to arrive before breaking/placing along a turn. */
@@ -94,14 +102,19 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         return this.processor;
     }
 
+    public Optional<Rotation> requestedRotation() { return Optional.ofNullable(requestedRotation); }
+
     @Override
     public void resetSteering() {
         this.target = null;
+        this.requestedRotation = null;
         this.prevRotation = null;
         this.processor.reset();
         this.renderControlled = false;
         this.interactionReadyTicks = 0;
         this.lastInteractionTick = -1;
+        this.settlingTarget = null;
+        this.settlingTicks = 0;
         if (baritone.getNaturalMovementBehavior() != null) baritone.getNaturalMovementBehavior().reset();
     }
 
@@ -121,6 +134,28 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         if (event.getType() == TickEvent.Type.IN) {
             this.renderControlled = false;
             this.processor.tick();
+            if (this.target == null && this.settlingTarget != null && this.settlingTicks > 0
+                    && Baritone.settings().naturalMovement.value && !ctx.player().isFallFlying()) {
+                // Finish the hand motion after the body arrives. A mouse movement or
+                // an external rotation hands control back immediately.
+                Rotation current = ctx.playerRotations();
+                var options = ctx.minecraft().options;
+                boolean manualInput = options.keyUp.isDown() || options.keyDown.isDown() || options.keyLeft.isDown()
+                        || options.keyRight.isDown() || options.keyJump.isDown() || options.keyAttack.isDown() || options.keyUse.isDown();
+                if (manualInput || renderTo == null || Math.abs(Rotation.normalizeYaw(current.getYaw() - renderTo.getYaw())) > .001
+                        || Math.abs(current.getPitch() - renderTo.getPitch()) > .001) {
+                    this.settlingTarget = null;
+                    this.settlingTicks = 0;
+                    this.requestedRotation = null;
+                } else {
+                    this.target = this.settlingTarget;
+                    this.settlingTicks--;
+                }
+            }
+        } else {
+            this.requestedRotation = null;
+            this.settlingTarget = null;
+            this.settlingTicks = 0;
         }
     }
 
@@ -200,7 +235,10 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     @Override
     public void onWorldEvent(WorldEvent event) {
         this.serverRotation = null;
+        this.requestedRotation = null;
         this.target = null;
+        this.settlingTarget = null;
+        this.settlingTicks = 0;
         this.prevRotation = null;
         this.processor.reset();
         this.renderControlled = false;
@@ -272,8 +310,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         private double pendingPitchVelocity;
         private boolean committed;
         private double yawAcceleration, pitchAcceleration, pendingYawAcceleration, pendingPitchAcceleration;
-        private long motionSeed = Long.MIN_VALUE;
-        private double stiffness = 0.13, damping = 0.57, speedScale = 1, accelerationScale = 1;
+        private long motionSeed;
+        private NaturalSteering.Parameters motor;
+        private double motorBaseSpeed, motorBaseAcceleration;
 
         public AbstractAimProcessor(IPlayerContext ctx) {
             this.ctx = ctx;
@@ -295,10 +334,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.pendingYawAcceleration = source.pendingYawAcceleration;
             this.pendingPitchAcceleration = source.pendingPitchAcceleration;
             this.motionSeed = source.motionSeed;
-            this.stiffness = source.stiffness;
-            this.damping = source.damping;
-            this.speedScale = source.speedScale;
-            this.accelerationScale = source.accelerationScale;
+            this.motor = source.motor;
+            this.motorBaseSpeed = source.motorBaseSpeed;
+            this.motorBaseAcceleration = source.motorBaseAcceleration;
         }
 
         @Override
@@ -314,10 +352,11 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                 double yawStep = SmoothRotation.step(SmoothRotation.wrapDegrees(desiredYaw - prev.getYaw()), yawVelocity, speed, acceleration);
                 double pitchStep = SmoothRotation.step(Rotation.clampPitch(desiredPitch) - prev.getPitch(), pitchVelocity, speed, acceleration);
                 if (Baritone.settings().naturalMovement.value) {
+                    var response = motor == null ? NaturalSteering.parameters(Baritone.settings().naturalMovementSeed.value, speed, acceleration) : motor;
                     yawStep = NaturalSteering.step(SmoothRotation.wrapDegrees(desiredYaw - prev.getYaw()), yawVelocity,
-                            yawAcceleration, stiffness, damping, speed * speedScale, acceleration * accelerationScale);
+                            yawAcceleration, response.stiffness(), response.damping(), response.speedLimit(), response.accelerationLimit());
                     pitchStep = NaturalSteering.step(Rotation.clampPitch(desiredPitch) - prev.getPitch(), pitchVelocity,
-                            pitchAcceleration, stiffness, damping, speed * speedScale, acceleration * accelerationScale);
+                            pitchAcceleration, response.stiffness(), response.damping(), response.speedLimit(), response.accelerationLimit());
                 }
                 // Finish within half a mouse count instead of stalling in the proportional arrival zone.
                 double mouseCount = mouseToAngle(1);
@@ -358,12 +397,12 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.pitchVelocity = committed ? pendingPitchVelocity : 0;
             committed = false;
             long seed = Baritone.settings().naturalMovementSeed.value;
-            if (motionSeed != seed) {
-                ForkableRandom motion = new ForkableRandom(seed);
-                this.stiffness = 0.11 + motion.nextDouble() * 0.04;
-                this.damping = 0.50 + motion.nextDouble() * 0.14;
-                this.speedScale = 0.89 + motion.nextDouble() * 0.28;
-                this.accelerationScale = 1.60 + motion.nextDouble() * 0.14;
+            double speed = positiveLimit(Baritone.settings().smoothMovementMaxTurn.value, 18);
+            double acceleration = positiveLimit(Baritone.settings().smoothMovementAcceleration.value, 3);
+            if (motor == null || motionSeed != seed || motorBaseSpeed != speed || motorBaseAcceleration != acceleration) {
+                this.motor = NaturalSteering.parameters(seed, speed, acceleration);
+                this.motorBaseSpeed = speed;
+                this.motorBaseAcceleration = acceleration;
                 this.motionSeed = seed;
             }
             // randomLooking
@@ -413,7 +452,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.pendingPitchVelocity = 0;
             this.committed = false;
             this.yawAcceleration = this.pitchAcceleration = this.pendingYawAcceleration = this.pendingPitchAcceleration = 0;
-            this.motionSeed = Long.MIN_VALUE;
+            this.motor = null;
             this.onReset();
         }
 

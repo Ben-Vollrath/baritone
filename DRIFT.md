@@ -6,11 +6,19 @@ The fork retains Baritone's LGPL-3.0-or-later license.
 `naturalMovement` adds seeded motor-response variation, occasional overshoot and
 correction, render-frame camera interpolation, spatial route/lane preferences,
 straight-line lookahead, walking gaze changes, turn strafing, and optional sprint
-hops on verified flat runways. `naturalMovementSeed` fixes a job for replay;
+hops on verified flat cardinal or diagonal runways. Diagonal hops check both swept
+corner cells at jump height. `naturalMovementSeed` fixes a job for replay;
 Drift supplies fresh job seeds in normal use. `naturalSprintJump` controls optional
 hops and `naturalRouteVariation` controls the added route preference cost.
 Natural mode briefly acquires mining aim and waits for nearby drops to become
 collectible. This is ongoing work; visual human equivalence is not established.
+
+Natural motor parameters are generated centrally in `NaturalSteering.parameters`,
+so live steering and seeded convergence tests use the same responses. With the
+default base limits, job speed limits vary from 25.2 to 50.4 degrees/tick; stronger
+braking shortens the constant-speed part of large turns. These ranges were
+adjusted after matched personal movement references showed faster, more varied
+initial turns. The regression `smoothMovement` profile retains its original limits.
 
 Enable `smoothMovement` to apply gradual, mouse-quantized ground rotations. Limits
 are `smoothMovementMaxTurn` (18 degrees/tick per axis) and
@@ -23,8 +31,10 @@ ground smoothing. Disable free look to display the resulting rotations.
 
 The live aim processor holds one rotation origin per tick. Repeated previews do
 not consume turn state; committed velocities take effect on the next tick.
-Prediction forks copy their own velocities/random state. Idle ticks and world
-transitions reset steering momentum. Elytra uses the existing aim algorithm.
+Prediction forks copy their own velocities/random state. After arrival, natural
+steering finishes the last hand motion for at most 40 ticks. Manual keys, external
+rotation, explicit reset, and world transitions cancel this continuation. Other
+idle ticks reset steering momentum. Elytra uses the existing aim algorithm.
 
 `drift/build.gradle` is a Fabric-only build adapter for inclusion as the `:baritone`
 subproject of DriftClient's Java 25/Loom build. It compiles the upstream source

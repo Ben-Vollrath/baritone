@@ -664,40 +664,64 @@ public interface MovementHelper extends ActionCosts, Helper {
     }
 
     static void moveTowards(IPlayerContext ctx, MovementState state, BlockPos pos) {
-        if (Baritone.settings().naturalMovement.value) {
+        Baritone naturalOwner = null;
+        int lookahead = 0;
+        boolean naturalWalking = Baritone.settings().naturalMovement.value && state.getStatus() == baritone.api.pathing.movement.MovementStatus.RUNNING;
+        if (naturalWalking) {
             var active = baritone.api.BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
+            if (active instanceof Baritone instance) naturalOwner = instance;
             var executor = active == null ? null : active.getPathingBehavior().getCurrent();
             if (executor != null) {
                 var movements = executor.getPath().movements();
                 int index = executor.getPosition();
-                if (index >= 0 && index < movements.size() && movements.get(index) instanceof baritone.pathing.movement.movements.MovementTraverse) {
+                if (index >= 0 && index < movements.size() && naturalLookaheadSafe(ctx, movements.get(index))
+                        && pos.getX() == movements.get(index).getDest().getX() && pos.getZ() == movements.get(index).getDest().getZ()) {
+                    // Traverse asks to aim at the head block. Navigation nodes describe
+                    // the floor, so normalize height before extending the steering target.
+                    pos = movements.get(index).getDest();
                     var direction = movements.get(index).getDirection();
                     // Follow the runway ahead instead of correcting toward every block center.
-                    for (int i = index + 1; i < movements.size() && i <= index + 3; i++) {
+                    for (int i = index + 1; i < movements.size() && i <= index + 7; i++) {
                         var next = movements.get(i);
-                        if (!(next instanceof baritone.pathing.movement.movements.MovementTraverse)
+                        if (!naturalLookaheadSafe(ctx, next)
                                 || !direction.equals(next.getDirection()) || next.getDest().getY() != pos.getY()
                                 || !fullyPassable(ctx, next.getDest()) || !fullyPassable(ctx, next.getDest().above())
                                 || !canWalkOn(ctx, next.getDest().below())) break;
                         pos = next.getDest();
+                        lookahead++;
                     }
                 }
             }
         }
         net.minecraft.world.phys.Vec3 point = VecUtils.getBlockPosCenter(pos);
-        if (Baritone.settings().naturalMovement.value && pos.getY() == ctx.playerFeet().getY()
+        if (naturalWalking && pos.getY() == ctx.playerFeet().getY()
                 && BlockStateInterface.get(ctx, pos.below()).isFaceSturdy(ctx.world(), pos.below(), Direction.UP)) {
             long seed = Baritone.settings().naturalMovementSeed.value;
             double dx = (baritone.utils.RouteVariation.value(seed ^ 0x153abL, pos.getX(), pos.getZ()) - 0.5) * 0.28;
             double dz = (baritone.utils.RouteVariation.value(seed ^ 0x8ce12L, pos.getX(), pos.getZ()) - 0.5) * 0.28;
             point = point.add(dx, 0, dz);
         }
+        if (naturalOwner != null) naturalOwner.getNaturalMovementBehavior().observeSteering(lookahead, point.x, point.z);
         state.setTarget(new MovementTarget(
                 RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
                         point,
-                        ctx.playerRotations()).withPitch(naturalWalkingPitch(ctx)),
+                        ctx.playerRotations()).withPitch(naturalWalking ? naturalWalkingPitch(ctx) : ctx.playerRotations().getPitch()),
                 false
         )).setInput(Input.MOVE_FORWARD, true);
+    }
+
+    static boolean naturalLookaheadSafe(IPlayerContext ctx, baritone.api.pathing.movement.IMovement movement) {
+        if (movement.getDirection().getY() != 0) return false;
+        if (movement instanceof baritone.pathing.movement.movements.MovementTraverse) return true;
+        if (!(movement instanceof baritone.pathing.movement.movements.MovementDiagonal)) return false;
+        // A diagonal can deliberately skirt one blocked corner. Extend it only
+        // when both side cells are clear and supported, preserving that maneuver.
+        BlockPos a = new BlockPos(movement.getDest().x, movement.getSrc().y, movement.getSrc().z);
+        BlockPos b = new BlockPos(movement.getSrc().x, movement.getSrc().y, movement.getDest().z);
+        for (BlockPos pos : new BlockPos[]{a, b}) {
+            if (!fullyPassable(ctx, pos) || !fullyPassable(ctx, pos.above()) || !canWalkOn(ctx, pos.below())) return false;
+        }
+        return true;
     }
 
     static float naturalWalkingPitch(IPlayerContext ctx) {

@@ -10,6 +10,7 @@ import baritone.api.utils.input.Input;
 import baritone.behavior.look.ForkableRandom;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.movements.MovementTraverse;
+import baritone.pathing.movement.movements.MovementDiagonal;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.Blocks;
@@ -25,6 +26,8 @@ public final class NaturalMovementBehavior extends Behavior {
     private ForkableRandom gazeRandom = new ForkableRandom(0);
     private float walkingPitch = 5;
     private int nextGaze;
+    private int lookahead;
+    private double steeringX, steeringZ;
 
     public NaturalMovementBehavior(Baritone baritone) { super(baritone); }
 
@@ -36,13 +39,18 @@ public final class NaturalMovementBehavior extends Behavior {
         startedAt = ctx.player() == null ? 0 : ctx.player().tickCount;
         decision = "idle";
         walkingPitch = 5;
+        lookahead = 0;
     }
 
     public int elapsedTicks() { return ctx.player() == null ? 0 : ctx.player().tickCount - startedAt; }
 
     public float walkingPitch() { return walkingPitch; }
 
-    public java.util.Map<String, Object> status() { return java.util.Map.of("decision", decision, "jumps", jumps, "hopping", hopping); }
+    public void observeSteering(int steps, double x, double z) { lookahead = steps; steeringX = x; steeringZ = z; }
+    public int lookaheadSteps() { return lookahead; }
+
+    public java.util.Map<String, Object> status() { return java.util.Map.of("decision", decision, "jumps", jumps, "hopping", hopping,
+            "lookaheadSteps", lookahead, "steeringX", steeringX, "steeringZ", steeringZ); }
 
     @Override public void onWorldEvent(WorldEvent event) { reset(); }
 
@@ -84,7 +92,7 @@ public final class NaturalMovementBehavior extends Behavior {
             if (!player.onGround()) leftGround = true;
             if (player.tickCount - hopStarted > 30 || leftGround && player.onGround()) {
                 hopping = false;
-                nextJump = player.tickCount + (random.nextDouble() < 0.72 ? (int) (random.nextDouble() * 3) : 9 + (int) (random.nextDouble() * 12));
+                nextJump = player.tickCount + (random.nextDouble() < 0.90 ? (int) (random.nextDouble() * 3) : 4 + (int) (random.nextDouble() * 7));
             }
             return;
         }
@@ -101,26 +109,35 @@ public final class NaturalMovementBehavior extends Behavior {
         var movements = executor.getPath().movements();
         int index = executor.getPosition();
         decision = "short runway or nonflat movement";
-        if (index < 0 || index + 6 >= movements.size() || !(movements.get(index) instanceof MovementTraverse)) return;
+        if (index < 0 || index >= movements.size()) return;
         var current = movements.get(index);
+        if (!(current instanceof MovementTraverse || current instanceof MovementDiagonal)
+                || !MovementHelper.naturalLookaheadSafe(ctx, current)) return;
         var direction = current.getDirection();
         if (direction.getY() != 0) return;
+        // Count distance rather than nodes: a diagonal step is sqrt(2) blocks.
+        int runwaySteps = (int) Math.ceil(7 / Math.hypot(direction.getX(), direction.getZ()));
+        if (index + runwaySteps > movements.size()) return;
         float desiredYaw = (float) Math.toDegrees(Math.atan2(-direction.getX(), direction.getZ()));
         decision = "turning";
         if (Math.abs(Rotation.normalizeYaw(desiredYaw - player.getYRot())) > 6) return;
         int ground = current.getSrc().y;
         decision = "runway obstacle, turn or edge";
-        for (int i = index; i <= index + 6; i++) {
+        for (int i = index; i < index + runwaySteps; i++) {
             var next = movements.get(i);
-            if (!(next instanceof MovementTraverse) || !next.getDirection().equals(direction) || next.getDest().y != ground) return;
+            if (!(next instanceof MovementTraverse || next instanceof MovementDiagonal)
+                    || !MovementHelper.naturalLookaheadSafe(ctx, next)
+                    || !next.getDirection().equals(direction) || next.getDest().y != ground) return;
             // Include side columns: hops are optional, so a narrow ledge is not a runway.
             for (int side = -1; side <= 1; side++) {
-                BlockPos pos = next.getDest().offset(-direction.getZ() * side, 0, direction.getX() * side);
-                var floor = ctx.world().getBlockState(pos.below());
-                if (!floor.isFaceSturdy(ctx.world(), pos.below(), Direction.UP) || MovementHelper.avoidWalkingInto(floor)
-                        || floor.is(Blocks.ICE) || floor.is(Blocks.PACKED_ICE) || floor.is(Blocks.BLUE_ICE)
-                        || floor.is(Blocks.HONEY_BLOCK) || floor.is(Blocks.SLIME_BLOCK)) return;
-                for (int y = 0; y <= 3; y++) if (!MovementHelper.fullyPassable(ctx, pos.above(y))) return;
+                int ox = -direction.getZ() * side, oz = direction.getX() * side;
+                if (!hopColumnClear(next.getSrc().offset(ox, 0, oz)) || !hopColumnClear(next.getDest().offset(ox, 0, oz))) return;
+                if (next instanceof MovementDiagonal) {
+                    // Check the cells swept between diagonal nodes at jump height,
+                    // including both corners rather than only the diagonal centers.
+                    if (!hopColumnClear(new BlockPos(next.getSrc().x + ox, ground, next.getDest().z + oz))
+                            || !hopColumnClear(new BlockPos(next.getDest().x + ox, ground, next.getSrc().z + oz))) return;
+                }
             }
         }
         floorY = ground;
@@ -130,5 +147,14 @@ public final class NaturalMovementBehavior extends Behavior {
         jumps++;
         leftGround = false;
         input.setInputForceState(Input.JUMP, true);
+    }
+
+    private boolean hopColumnClear(BlockPos pos) {
+        var floor = ctx.world().getBlockState(pos.below());
+        if (!floor.isFaceSturdy(ctx.world(), pos.below(), Direction.UP) || MovementHelper.avoidWalkingInto(floor)
+                || floor.is(Blocks.ICE) || floor.is(Blocks.PACKED_ICE) || floor.is(Blocks.BLUE_ICE)
+                || floor.is(Blocks.HONEY_BLOCK) || floor.is(Blocks.SLIME_BLOCK)) return false;
+        for (int y = 0; y <= 3; y++) if (!MovementHelper.fullyPassable(ctx, pos.above(y))) return false;
+        return true;
     }
 }

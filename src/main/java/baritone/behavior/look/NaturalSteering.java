@@ -5,6 +5,22 @@ package baritone.behavior.look;
 public final class NaturalSteering {
     private NaturalSteering() {}
 
+    public record Parameters(double stiffness, double damping, double speedLimit, double accelerationLimit) {}
+
+    /** One reproducible motor style per job; shared by live steering and its tests. */
+    public static Parameters parameters(long seed, double baseSpeed, double baseAcceleration) {
+        if (!Double.isFinite(baseSpeed) || !Double.isFinite(baseAcceleration) || !(baseSpeed > 0) || !(baseAcceleration > 0))
+            throw new IllegalArgumentException("Invalid motor limits");
+        ForkableRandom random = new ForkableRandom(seed);
+        double stiffness = .16 + random.nextDouble() * .10;
+        double damping = .60 + random.nextDouble() * .25;
+        double speed = baseSpeed * (1.4 + random.nextDouble() * 1.4);
+        // Enough acceleration to brake a fast hand motion without a prolonged
+        // saturated-speed plateau. Mouse quantization still applies afterwards.
+        double acceleration = Math.max(baseAcceleration * (6 + random.nextDouble() * 4), speed * .65);
+        return new Parameters(stiffness, damping, speed, acceleration);
+    }
+
     public static double step(double error, double velocity, double acceleration,
                               double stiffness, double damping, double speedLimit, double accelerationLimit) {
         if (!Double.isFinite(error) || !Double.isFinite(velocity) || !Double.isFinite(acceleration)
