@@ -780,6 +780,15 @@ public final class Settings {
     /** Maximum change of turn speed per tick, except when stopping at a changed target. */
     public final Setting<Double> smoothMovementAcceleration = new Setting<>(3.0);
 
+    /** Varied motor responses, within-block lanes, and route preferences. */
+    public final Setting<Boolean> naturalMovement = new Setting<>(false);
+    /** Job seed. Drift supplies a fresh seed unless a replay seed is requested. */
+    public final Setting<Long> naturalMovementSeed = new Setting<>(0L);
+    /** Nonnegative route-cost preference strength; never makes hazardous moves cheaper. */
+    public final Setting<Double> naturalRouteVariation = new Setting<>(0.18);
+    /** Use sprint hops on long, flat, clear sections. */
+    public final Setting<Boolean> naturalSprintJump = new Setting<>(true);
+
     /**
      * Same as {@link #smoothLook} but for elytra flying.
      */

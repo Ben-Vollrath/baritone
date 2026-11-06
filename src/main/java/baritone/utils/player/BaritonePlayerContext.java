@@ -81,6 +81,13 @@ public final class BaritonePlayerContext implements IPlayerContext {
     }
 
     @Override
+    public BetterBlockPos playerFeet() {
+        BetterBlockPos actual = IPlayerContext.super.playerFeet();
+        var gait = baritone.getNaturalMovementBehavior();
+        return gait == null ? actual : gait.projectFeet(actual);
+    }
+
+    @Override
     public HitResult objectMouseOver() {
         return RayTraceUtils.rayTraceTowards(player(), playerRotations(), playerController().getBlockReachDistance());
     }

@@ -142,7 +142,13 @@ public abstract class Movement implements IMovement, MovementHelper {
         if (Baritone.settings().smoothMovement.value && ctx.player().onGround() && safeToCancel()) {
             currentState.getTarget().getRotation().ifPresent(rotation -> {
                 Rotation actual = baritone.getLookBehavior().getAimProcessor().peekRotation(rotation);
-                if (Math.abs(Rotation.normalizeYaw(rotation.getYaw() - actual.getYaw())) > 15) {
+                double remainingTurn = Math.abs(Rotation.normalizeYaw(rotation.getYaw() - actual.getYaw()));
+                if (remainingTurn > 15) {
+                    if (Baritone.settings().naturalMovement.value && remainingTurn < 75
+                            && currentState.getStatus() == MovementStatus.RUNNING
+                            && !currentState.getTarget().hasToForceRotations()
+                            && this instanceof baritone.pathing.movement.movements.MovementTraverse
+                            && strafeThroughTurn(rotation.getYaw(), actual.getYaw())) return;
                     for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT,
                             Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT}) {
                         currentState.setInput(input, false);
@@ -161,6 +167,27 @@ public abstract class Movement implements IMovement, MovementHelper {
         }
 
         return currentState.getStatus();
+    }
+
+    private boolean strafeThroughTurn(float desiredYaw, float actualYaw) {
+        var selection = MovementOption.getOptions((float) Math.sin(Math.toRadians(actualYaw)),
+                        (float) Math.cos(Math.toRadians(actualYaw)), false)
+                .min(Comparator.comparing(option -> option.distanceToSq((float) Math.sin(Math.toRadians(desiredYaw)),
+                        (float) Math.cos(Math.toRadians(desiredYaw))))).orElseThrow();
+        double length = Math.hypot(selection.motionX(), selection.motionZ());
+        double dx = -selection.motionX() / length * .38, dz = selection.motionZ() / length * .38;
+        var box = ctx.player().getBoundingBox().expandTowards(dx, 0, dz);
+        if (!ctx.world().noCollision(ctx.player(), box)) return false;
+        int floor = ctx.playerFeet().getY() - 1;
+        for (double x : new double[]{box.minX, box.maxX}) for (double z : new double[]{box.minZ, box.maxZ}) {
+            var pos = new BlockPos((int) Math.floor(x), floor, (int) Math.floor(z));
+            var state = ctx.world().getBlockState(pos);
+            if (!state.isFaceSturdy(ctx.world(), pos, Direction.UP) || MovementHelper.avoidWalkingInto(state)) return false;
+        }
+        for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT})
+            currentState.setInput(input, false);
+        selection.setInputs(currentState);
+        return true;
     }
 
     protected boolean prepared(MovementState state) {

@@ -150,7 +150,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         Map<BlockPos, Long> copy = new HashMap<>(anticipatedDrops);
         ctx.getSelectedBlock().ifPresent(pos -> {
             if (knownOreLocations.contains(pos)) {
-                copy.put(pos, System.currentTimeMillis() + Baritone.settings().mineDropLoiterDurationMSThanksLouca.value);
+                long loiter = Baritone.settings().mineDropLoiterDurationMSThanksLouca.value;
+                if (Baritone.settings().naturalMovement.value) loiter = Math.max(loiter, 750L);
+                copy.put(pos, System.currentTimeMillis() + loiter);
             }
         });
         // elaborate dance to avoid concurrentmodificationexcepption since rescan thread reads this

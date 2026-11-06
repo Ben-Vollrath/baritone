@@ -53,6 +53,8 @@ public class CalculationContext {
     private static final ItemStack STACK_BUCKET_WATER = new ItemStack(Items.WATER_BUCKET);
 
     public final boolean safeForThreadedUse;
+    public final long naturalRouteSeed;
+    public final double naturalRouteStrength;
     public final IBaritone baritone;
     public final Level world;
     public final WorldData worldData;
@@ -93,6 +95,10 @@ public class CalculationContext {
 
     public CalculationContext(IBaritone baritone, boolean forUseOnAnotherThread) {
         this.precomputedData = new PrecomputedData();
+        this.naturalRouteSeed = Baritone.settings().naturalMovementSeed.value;
+        double variation = Baritone.settings().naturalRouteVariation.value;
+        this.naturalRouteStrength = Baritone.settings().naturalMovement.value && Double.isFinite(variation)
+                ? Math.max(0, Math.min(0.35, variation)) : 0;
         this.safeForThreadedUse = forUseOnAnotherThread;
         this.baritone = baritone;
         LocalPlayer player = baritone.getPlayerContext().player();

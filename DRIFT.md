@@ -3,6 +3,15 @@
 Based on upstream `26.2` at `9fadf7cf95293d7f6678981e77a939b4a7978373`.
 The fork retains Baritone's LGPL-3.0-or-later license.
 
+`naturalMovement` adds seeded motor-response variation, occasional overshoot and
+correction, render-frame camera interpolation, spatial route/lane preferences,
+straight-line lookahead, walking gaze changes, turn strafing, and optional sprint
+hops on verified flat runways. `naturalMovementSeed` fixes a job for replay;
+Drift supplies fresh job seeds in normal use. `naturalSprintJump` controls optional
+hops and `naturalRouteVariation` controls the added route preference cost.
+Natural mode briefly acquires mining aim and waits for nearby drops to become
+collectible. This is ongoing work; visual human equivalence is not established.
+
 Enable `smoothMovement` to apply gradual, mouse-quantized ground rotations. Limits
 are `smoothMovementMaxTurn` (18 degrees/tick per axis) and
 `smoothMovementAcceleration` (3 degrees/tick²). The pure controller reserves enough
@@ -36,3 +45,9 @@ reversal, and invalid inputs without launching Minecraft. DriftClient's
 `dev/movement_bench.py` runs resettable singleplayer fixtures for turning, corners,
 stairs, and mining, compares baseline/smooth telemetry, and checks the real aim
 processor's preview/fork contracts. See DriftClient's `docs/movement.md` for setup.
+
+`NaturalSteeringTest` covers seeded overshoot/recovery and camera continuity;
+`RouteVariationTest` covers deterministic, coherent, nonnegative spatial
+preferences. The in-game fixtures also cover standing aim, alternate routes,
+headroom, ledges, and a long runway. DriftClient can record rendered footage and
+build a local synchronized comparison with `dev/movement_review.py`.

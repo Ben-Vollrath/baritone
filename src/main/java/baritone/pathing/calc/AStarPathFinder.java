@@ -158,6 +158,10 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                             SettingsUtil.maybeCensor(currentNode.y + moves.yOffset)));
                 }
                 long hashCode = BetterBlockPos.longHash(res.x, res.y, res.z);
+                if (calcContext.naturalRouteStrength > 0) {
+                    actionCost *= 1 + calcContext.naturalRouteStrength
+                            * baritone.utils.RouteVariation.value(calcContext.naturalRouteSeed, res.x, res.z);
+                }
                 if (isFavoring) {
                     // see issue #18
                     actionCost *= favoring.calculate(hashCode);

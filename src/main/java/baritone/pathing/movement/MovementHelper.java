@@ -664,12 +664,47 @@ public interface MovementHelper extends ActionCosts, Helper {
     }
 
     static void moveTowards(IPlayerContext ctx, MovementState state, BlockPos pos) {
+        if (Baritone.settings().naturalMovement.value) {
+            var active = baritone.api.BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
+            var executor = active == null ? null : active.getPathingBehavior().getCurrent();
+            if (executor != null) {
+                var movements = executor.getPath().movements();
+                int index = executor.getPosition();
+                if (index >= 0 && index < movements.size() && movements.get(index) instanceof baritone.pathing.movement.movements.MovementTraverse) {
+                    var direction = movements.get(index).getDirection();
+                    // Follow the runway ahead instead of correcting toward every block center.
+                    for (int i = index + 1; i < movements.size() && i <= index + 3; i++) {
+                        var next = movements.get(i);
+                        if (!(next instanceof baritone.pathing.movement.movements.MovementTraverse)
+                                || !direction.equals(next.getDirection()) || next.getDest().getY() != pos.getY()
+                                || !fullyPassable(ctx, next.getDest()) || !fullyPassable(ctx, next.getDest().above())
+                                || !canWalkOn(ctx, next.getDest().below())) break;
+                        pos = next.getDest();
+                    }
+                }
+            }
+        }
+        net.minecraft.world.phys.Vec3 point = VecUtils.getBlockPosCenter(pos);
+        if (Baritone.settings().naturalMovement.value && pos.getY() == ctx.playerFeet().getY()
+                && BlockStateInterface.get(ctx, pos.below()).isFaceSturdy(ctx.world(), pos.below(), Direction.UP)) {
+            long seed = Baritone.settings().naturalMovementSeed.value;
+            double dx = (baritone.utils.RouteVariation.value(seed ^ 0x153abL, pos.getX(), pos.getZ()) - 0.5) * 0.28;
+            double dz = (baritone.utils.RouteVariation.value(seed ^ 0x8ce12L, pos.getX(), pos.getZ()) - 0.5) * 0.28;
+            point = point.add(dx, 0, dz);
+        }
         state.setTarget(new MovementTarget(
                 RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
-                        VecUtils.getBlockPosCenter(pos),
-                        ctx.playerRotations()).withPitch(ctx.playerRotations().getPitch()),
+                        point,
+                        ctx.playerRotations()).withPitch(naturalWalkingPitch(ctx)),
                 false
         )).setInput(Input.MOVE_FORWARD, true);
+    }
+
+    static float naturalWalkingPitch(IPlayerContext ctx) {
+        if (!Baritone.settings().naturalMovement.value) return ctx.playerRotations().getPitch();
+        var active = baritone.api.BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
+        if (!(active instanceof Baritone instance)) return ctx.playerRotations().getPitch();
+        return instance.getNaturalMovementBehavior().walkingPitch();
     }
 
     static void moveTowardsWithoutRotation(IPlayerContext ctx, MovementState state, float idealYaw) {

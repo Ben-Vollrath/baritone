@@ -47,4 +47,7 @@ public interface ILookBehavior extends IBehavior {
      * @see IAimProcessor#fork
      */
     IAimProcessor getAimProcessor();
+
+    /** Begin a new movement job without carrying its predecessor's steering momentum. */
+    default void resetSteering() {}
 }
