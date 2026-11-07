@@ -34,6 +34,7 @@ import baritone.utils.RouteVariation;
 import baritone.behavior.look.ForkableRandom;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
@@ -71,6 +72,11 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private Float naturalViewPitch;
     private long naturalCollectionUntil;
     private int naturalRetryAfter;
+    private BlockPos naturalAimBlock;
+    private Direction naturalAimFace;
+    private int naturalAimSince;
+    private Input naturalNudgeInput;
+    private int naturalNudgeUntil, naturalNudgeNext, naturalNudgeSerial;
 
     public MineProcess(Baritone baritone) {
         super(baritone);
@@ -216,6 +222,8 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             if (stance == null) return null;
             naturalBatch = batch;
             naturalStance = stance;
+            naturalNudgeInput = null;
+            naturalNudgeNext = ctx.player().tickCount + 6;
         }
         List<BlockPos> live = naturalBatch.stream().filter(pos -> filter.has(BlockStateInterface.get(ctx, pos))).toList();
         if (live.isEmpty()) {
@@ -232,8 +240,12 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
         double reach = ctx.playerController().getBlockReachDistance();
         boolean inRange = live.stream().allMatch(pos -> ctx.playerHead().distanceToSqr(VecUtils.getBlockPosCenter(pos)) < (reach-.1)*(reach-.1));
-        if (!ctx.playerFeet().equals(naturalStance) || !inRange || !ctx.player().onGround() || !safeToCancel) {
+        boolean inWorkingArea = ctx.playerFeet().equals(naturalStance)
+                || naturalAttackHeld && ctx.playerFeet().getY()==naturalStance.getY()
+                && Math.hypot(ctx.player().getX()-naturalStance.getX()-.5,ctx.player().getZ()-naturalStance.getZ()-.5)<naturalWorkingRadius();
+        if (!inWorkingArea || !inRange || !ctx.player().onGround() || !safeToCancel) {
             naturalAttackHeld = false;
+            naturalNudgeInput = null;
             return new PathingCommand(new GoalBlock(naturalStance), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
         if (naturalTarget != null && !live.contains(naturalTarget)) naturalTarget = null;
@@ -252,6 +264,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             if (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rotation.get())) naturalAttackHeld = true;
             if (naturalAttackHeld)
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+            if (naturalAttackHeld) naturalMiningNudge(live);
             return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
         }
         // The visible surface changed or the stance was obstructed. Fall back to
@@ -295,18 +308,123 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     /** Geometric reachability, independent of how far the hand can turn this tick. */
     private Optional<Rotation> naturalReachable(BlockPos pos) {
-        var center = VecUtils.calculateBlockCenter(ctx.world(), pos);
-        var random = new ForkableRandom(Baritone.settings().naturalMovementSeed.value ^ pos.asLong() ^ 0x7513abL);
-        var preferred = center.add((random.nextDouble()-.5)*.3, (random.nextDouble()-.5)*.2, (random.nextDouble()-.5)*.3);
+        if (pos.equals(naturalAimBlock) && naturalAimFace!=null) {
+            var rotation=naturalVisiblePoint(pos,naturalFacePoint(pos,naturalAimFace));
+            if (rotation.isPresent()) return rotation;
+        }
+        Rotation best=null;
+        Direction bestFace=null;
+        double bestScore=Double.POSITIVE_INFINITY;
+        var random=new ForkableRandom(Baritone.settings().naturalMovementSeed.value ^ pos.asLong() ^ 0x7513abL);
+        for (Direction face:Direction.values()) {
+            var rotation=naturalVisiblePoint(pos,naturalFacePoint(pos,face));
+            if (rotation.isEmpty()) continue;
+            var r=rotation.get();
+            double score=Math.hypot(Rotation.normalizeYaw(r.getYaw()-ctx.playerRotations().getYaw()),
+                    r.getPitch()-ctx.playerRotations().getPitch())+random.nextDouble()*10;
+            if (score<bestScore) { bestScore=score; best=r; bestFace=face; }
+        }
+        if (best!=null) {
+            if (!pos.equals(naturalAimBlock)) naturalAimSince=ctx.player().tickCount;
+            naturalAimBlock=pos; naturalAimFace=bestFace;
+            return Optional.of(best);
+        }
+        return naturalVisiblePoint(pos,VecUtils.calculateBlockCenter(ctx.world(),pos));
+    }
+
+    private net.minecraft.world.phys.Vec3 naturalFacePoint(BlockPos pos,Direction face) {
+        var random=new ForkableRandom(Baritone.settings().naturalMovementSeed.value ^ pos.asLong() ^ face.ordinal()*0x7193abL);
+        double u=.3+random.nextDouble()*.4,v=.3+random.nextDouble()*.4;
+        int age=pos.equals(naturalAimBlock) ? Math.max(0,ctx.player().tickCount-naturalAimSince) : 0;
+        // Small held corrections on the face, with irregular pauses. The real
+        // held crosshair may wander without releasing attack or re-aiming at an
+        // exact center every time another block is selected.
+        int end=0;
+        for (int segment=0;segment<200;segment++) {
+            int duration=4+(int)(random.nextDouble()*9);
+            double du=(random.nextDouble()-.5)*.18,dv=(random.nextDouble()-.5)*.18;
+            if (age<end+duration) { u+=du;v+=dv;break; }
+            end+=duration;
+        }
+        return switch (face) {
+            case UP -> new net.minecraft.world.phys.Vec3(pos.getX()+u,pos.getY()+.998,pos.getZ()+v);
+            case DOWN -> new net.minecraft.world.phys.Vec3(pos.getX()+u,pos.getY()+.002,pos.getZ()+v);
+            case NORTH -> new net.minecraft.world.phys.Vec3(pos.getX()+u,pos.getY()+v,pos.getZ()+.002);
+            case SOUTH -> new net.minecraft.world.phys.Vec3(pos.getX()+u,pos.getY()+v,pos.getZ()+.998);
+            case WEST -> new net.minecraft.world.phys.Vec3(pos.getX()+.002,pos.getY()+v,pos.getZ()+u);
+            case EAST -> new net.minecraft.world.phys.Vec3(pos.getX()+.998,pos.getY()+v,pos.getZ()+u);
+        };
+    }
+
+    private Optional<Rotation> naturalVisiblePoint(BlockPos pos,net.minecraft.world.phys.Vec3 point) {
         double reach = ctx.playerController().getBlockReachDistance();
-        for (var point : new net.minecraft.world.phys.Vec3[]{preferred, center}) {
-            if (ctx.playerHead().distanceToSqr(point)>reach*reach) continue;
+        if (ctx.playerHead().distanceToSqr(point)<=reach*reach) {
             var hit = ctx.world().clip(new net.minecraft.world.level.ClipContext(ctx.playerHead(), point,
                     net.minecraft.world.level.ClipContext.Block.OUTLINE, net.minecraft.world.level.ClipContext.Fluid.NONE, ctx.player()));
             if (hit.getType()==net.minecraft.world.phys.HitResult.Type.BLOCK && hit.getBlockPos().equals(pos))
                 return Optional.of(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), point, ctx.playerRotations()));
         }
         return Optional.empty();
+    }
+
+    private void naturalMiningNudge(List<BlockPos> ores) {
+        int now=ctx.player().tickCount;
+        ctx.player().setSprinting(false);
+        if (naturalNudgeInput!=null && (now>=naturalNudgeUntil || !naturalNudgeSafe(naturalNudgeInput,ores))) naturalNudgeInput=null;
+        if (naturalNudgeInput==null && now>=naturalNudgeNext) {
+            var random=new ForkableRandom(Baritone.settings().naturalMovementSeed.value ^ naturalStance.asLong() ^ ++naturalNudgeSerial*0x83175bL);
+            Input[] choices={Input.MOVE_LEFT,Input.MOVE_RIGHT,Input.MOVE_BACK,Input.MOVE_FORWARD};
+            int start=(int)(random.nextDouble()*choices.length);
+            for (int i=0;i<choices.length;i++) {
+                Input input=choices[(start+i)%choices.length];
+                if (!naturalNudgeSafe(input,ores)) continue;
+                naturalNudgeInput=input;
+                naturalNudgeUntil=now+(ctx.player().getSpeed()>.18 ? 1 : 2+(int)(random.nextDouble()*2));
+                break;
+            }
+            naturalNudgeNext=now+9+(int)(random.nextDouble()*9);
+        }
+        if (naturalNudgeInput!=null) {
+            ctx.player().setSprinting(false);
+            baritone.getInputOverrideHandler().setInputForceState(naturalNudgeInput,true);
+        }
+    }
+
+    private double naturalWorkingRadius() {
+        return .9+Math.min(.45,Math.max(0,ctx.player().getSpeed()-.1)*2);
+    }
+
+    private boolean naturalNudgeSafe(Input input,List<BlockPos> ores) {
+        double yaw=Math.toRadians(ctx.player().getYRot());
+        double dx=-Math.sin(yaw),dz=Math.cos(yaw);
+        if (input==Input.MOVE_BACK) {dx=-dx;dz=-dz;}
+        if (input==Input.MOVE_LEFT) {dx=Math.cos(yaw);dz=Math.sin(yaw);}
+        if (input==Input.MOVE_RIGHT) {dx=-Math.cos(yaw);dz=-Math.sin(yaw);}
+        var velocity=ctx.player().getDeltaMovement();
+        int remaining=naturalNudgeInput==input ? Math.max(0,naturalNudgeUntil-ctx.player().tickCount)
+                : ctx.player().getSpeed()>.18 ? 1 : 3;
+        // On ordinary solid ground, each input impulse and its subsequent
+        // friction decay contribute speed/(1-.546) to stopping distance.
+        // Scale by actual movement speed: SkyBlock can be much faster than
+        // vanilla, so a high-speed tap lasts only one tick.
+        double impulse=ctx.player().getSpeed()*remaining/.454;
+        dx=dx*impulse+velocity.x/.454;dz=dz*impulse+velocity.z/.454;
+        var future=ctx.player().position().add(dx,0,dz);
+        if (Math.hypot(future.x-naturalStance.getX()-.5,future.z-naturalStance.getZ()-.5)>naturalWorkingRadius()-.1) return false;
+        var eye=ctx.playerHead().add(dx,0,dz);
+        double reach=ctx.playerController().getBlockReachDistance()-.15;
+        if (ores.stream().anyMatch(ore->eye.distanceToSqr(VecUtils.getBlockPosCenter(ore))>reach*reach
+                || Math.hypot(future.x-ore.getX()-.5,future.z-ore.getZ()-.5)<1.8)) return false;
+        var box=ctx.player().getBoundingBox().expandTowards(dx,0,dz);
+        if (!ctx.world().noCollision(ctx.player(),box)) return false;
+        for (int x=(int)Math.floor(box.minX);x<=Math.floor(box.maxX);x++) for (int z=(int)Math.floor(box.minZ);z<=Math.floor(box.maxZ);z++) {
+            var floor=new BlockPos(x,ctx.playerFeet().getY()-1,z);
+            var state=ctx.world().getBlockState(floor);
+            if (!state.isFaceSturdy(ctx.world(),floor,Direction.UP) || MovementHelper.avoidWalkingInto(state)
+                    || state.is(Blocks.MAGMA_BLOCK) || state.is(Blocks.ICE) || state.is(Blocks.PACKED_ICE)
+                    || state.is(Blocks.BLUE_ICE) || state.is(Blocks.SLIME_BLOCK) || state.is(Blocks.HONEY_BLOCK)) return false;
+        }
+        return true;
     }
 
 
@@ -332,6 +450,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     @Override
     public void onLostControl() {
         if (isHoldingAttack() && ctx.player() != null) ctx.playerController().resetBlockRemoving();
+        baritone.getInputOverrideHandler().clearAllKeys();
         mine(0, (BlockOptionalMetaLookup) null);
     }
 
@@ -688,6 +807,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.naturalAttackHeld = false;
         this.naturalViewPitch = null;
         this.naturalRetryAfter = 0;
+        this.naturalAimBlock=null;
+        this.naturalAimFace=null;
+        this.naturalNudgeInput=null;
+        this.naturalNudgeSerial=0;
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));
         }
