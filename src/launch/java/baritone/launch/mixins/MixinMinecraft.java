@@ -35,6 +35,7 @@ import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
@@ -54,6 +55,15 @@ public class MixinMinecraft {
 
     @Unique
     private BiFunction<EventState, TickEvent.Type, TickEvent> tickProvider;
+
+    @ModifyVariable(method = "continueAttack", at = @At("HEAD"), argsOnly = true)
+    private boolean holdMiningAttack(boolean held) {
+        var primary = (baritone.Baritone) BaritoneAPI.getProvider().getPrimaryBaritone();
+        var input = primary.getInputOverrideHandler();
+        boolean attack = held || input.isHoldingMiningAttack();
+        input.recordVanillaAttack(attack);
+        return attack;
+    }
 
     @Inject(
             method = "<init>",

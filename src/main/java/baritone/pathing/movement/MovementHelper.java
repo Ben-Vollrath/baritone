@@ -728,6 +728,8 @@ public interface MovementHelper extends ActionCosts, Helper {
         if (!Baritone.settings().naturalMovement.value) return ctx.playerRotations().getPitch();
         var active = baritone.api.BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
         if (!(active instanceof Baritone instance)) return ctx.playerRotations().getPitch();
+        var miningPitch = instance.getMineProcess().naturalViewPitch();
+        if (miningPitch.isPresent()) return miningPitch.get();
         return instance.getNaturalMovementBehavior().walkingPitch();
     }
 

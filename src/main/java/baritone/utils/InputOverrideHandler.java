@@ -45,6 +45,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
 
     private final BlockBreakHelper blockBreakHelper;
     private final BlockPlaceHelper blockPlaceHelper;
+    private boolean vanillaAttackHeld;
 
     public InputOverrideHandler(Baritone baritone) {
         super(baritone);
@@ -91,7 +92,13 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
             setInputForceState(Input.CLICK_RIGHT, false);
         }
         boolean interactionReady = baritone.getLookBehavior().isReadyForInteraction();
-        blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT) && interactionReady);
+        if (isHoldingMiningAttack()) {
+            // The primary player's ordinary held-attack path handles this. Do
+            // not run the helper too: it clears the controller every tick.
+            blockBreakHelper.stopBreakingBlock();
+        } else {
+            blockBreakHelper.tick(isInputForcedDown(Input.CLICK_LEFT) && interactionReady);
+        }
         blockPlaceHelper.tick(isInputForcedDown(Input.CLICK_RIGHT) && interactionReady);
 
         if (inControl()) {
@@ -120,4 +127,11 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     public BlockBreakHelper getBlockBreakHelper() {
         return blockBreakHelper;
     }
+
+    public boolean isHoldingMiningAttack() {
+        return baritone == BaritoneAPI.getProvider().getPrimaryBaritone() && baritone.getMineProcess().isHoldingAttack();
+    }
+
+    public void recordVanillaAttack(boolean held) { vanillaAttackHeld = held; }
+    public boolean vanillaAttackHeld() { return vanillaAttackHeld; }
 }

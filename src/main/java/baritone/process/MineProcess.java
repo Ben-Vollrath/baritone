@@ -30,6 +30,8 @@ import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import baritone.utils.BlockStateInterface;
+import baritone.utils.RouteVariation;
+import baritone.behavior.look.ForkableRandom;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.entity.Entity;
@@ -61,6 +63,14 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private GoalRunAway branchPointRunaway;
     private int desiredQuantity;
     private int tickCount;
+    private List<BlockPos> naturalBatch;
+    private BlockPos naturalStance, naturalTarget;
+    private List<BlockPos> naturalDropArea = Collections.emptyList();
+    private boolean naturalCollecting;
+    private boolean naturalAttackHeld;
+    private Float naturalViewPitch;
+    private long naturalCollectionUntil;
+    private int naturalRetryAfter;
 
     public MineProcess(Baritone baritone) {
         super(baritone);
@@ -82,6 +92,15 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 cancel();
                 return null;
             }
+        }
+        if (calcFailed && naturalStance != null) {
+            // A good view does not imply a reachable standing position. Let the
+            // original miner make progress before trying another working stance.
+            naturalBatch = null;
+            naturalStance = naturalTarget = null;
+            naturalAttackHeld = false;
+            naturalRetryAfter = ctx.player().tickCount + 100;
+            calcFailed = false;
         }
         if (calcFailed) {
             if (!knownOreLocations.isEmpty() && Baritone.settings().blacklistClosestOnFailure.value) {
@@ -120,6 +139,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 .filter(pos -> !(BlockStateInterface.get(ctx, pos).getBlock() instanceof AirBlock)) // after breaking a block, it takes mineGoalUpdateInterval ticks for it to actually update this list =(
                 .min(Comparator.comparingDouble(ctx.playerFeet().above()::distSqr));
         baritone.getInputOverrideHandler().clearAllKeys();
+        if (Baritone.settings().naturalMovement.value) {
+            PathingCommand batch = naturalBatchTick(curr, isSafeToCancel);
+            if (batch != null) return batch;
+        }
         if (shaft.isPresent() && ctx.player().onGround()) {
             BlockPos pos = shaft.get();
             BlockState state = baritone.bsi.get0(pos);
@@ -145,6 +168,147 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         return command;
     }
 
+    public String naturalPhase() {
+        return !isActive() ? "idle" : naturalCollecting ? "collect" : naturalTarget != null ? "harvest" : naturalStance != null ? "approach" : "search";
+    }
+
+    public Optional<Float> naturalViewPitch() { return Optional.ofNullable(naturalViewPitch); }
+
+    /** Sustained attack from the first acquired ore until the cluster finishes. */
+    public boolean isHoldingAttack() {
+        return isActive() && Baritone.settings().naturalMovement.value && naturalAttackHeld && naturalTarget != null && !naturalCollecting;
+    }
+
+    private PathingCommand naturalBatchTick(List<BlockPos> known, boolean safeToCancel) {
+        if (!Baritone.settings().mineScanDroppedItems.value) naturalCollecting = false;
+        if (naturalCollecting) {
+            List<BlockPos> drops = droppedItemsScan().stream()
+                    .filter(pos -> naturalDropArea.stream().anyMatch(ore -> ore.distSqr(pos) <= 16)).distinct().toList();
+            if (!drops.isEmpty() || System.currentTimeMillis() < naturalCollectionUntil) {
+                List<BlockPos> targets = drops.isEmpty() ? naturalDropArea : drops;
+                return new PathingCommand(new GoalComposite(targets.stream().map(GoalTwoBlocks::new).toArray(Goal[]::new)),
+                        PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+            }
+            naturalCollecting = false;
+            naturalViewPitch = null;
+        }
+        if (ctx.player().tickCount < naturalRetryAfter) return null;
+        if (naturalBatch == null) {
+            CalculationContext context = new CalculationContext(baritone);
+            List<BlockPos> ores = known.stream().distinct().filter(pos -> filter.has(BlockStateInterface.get(ctx, pos)))
+                    .filter(pos -> !blacklist.contains(pos) && plausibleToBreak(context, pos)).sorted(Comparator.comparingDouble(ctx.playerFeet()::distSqr)).toList();
+            if (ores.isEmpty()) return null;
+            BlockPos anchor = ores.get(0);
+            var batch = new ArrayList<BlockPos>();
+            batch.add(anchor);
+            int inventory = ctx.player().getInventory().getNonEquipmentItems().stream().filter(stack -> filter.has(stack)).mapToInt(ItemStack::getCount).sum();
+            int maximum = desiredQuantity > 0 ? Math.max(1, Math.min(8, desiredQuantity-inventory)) : 8;
+            boolean added;
+            do {
+                added = false;
+                for (BlockPos ore : ores) {
+                    if (batch.size() >= maximum) break;
+                    if (batch.contains(ore) || anchor.distSqr(ore) > 9) continue;
+                    if (batch.stream().anyMatch(other -> other.distSqr(ore) <= 3)) { batch.add(ore); added = true; }
+                }
+            } while (added && batch.size() < maximum);
+            BlockPos stance = naturalWorkingStance(batch);
+            if (stance == null) return null;
+            naturalBatch = batch;
+            naturalStance = stance;
+        }
+        List<BlockPos> live = naturalBatch.stream().filter(pos -> filter.has(BlockStateInterface.get(ctx, pos))).toList();
+        if (live.isEmpty()) {
+            naturalAttackHeld = false;
+            naturalDropArea = naturalBatch;
+            naturalBatch = null;
+            naturalStance = naturalTarget = null;
+            // Servers that deliver resources directly to inventory have no
+            // collection route. Honor the same policy as the original miner.
+            naturalCollecting = Baritone.settings().mineScanDroppedItems.value;
+            if (!naturalCollecting) return null;
+            naturalCollectionUntil = System.currentTimeMillis() + 1000;
+            return naturalBatchTick(known, safeToCancel);
+        }
+        double reach = ctx.playerController().getBlockReachDistance();
+        boolean inRange = live.stream().allMatch(pos -> ctx.playerHead().distanceToSqr(VecUtils.getBlockPosCenter(pos)) < (reach-.1)*(reach-.1));
+        if (!ctx.playerFeet().equals(naturalStance) || !inRange || !ctx.player().onGround() || !safeToCancel) {
+            naturalAttackHeld = false;
+            return new PathingCommand(new GoalBlock(naturalStance), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
+        }
+        if (naturalTarget != null && !live.contains(naturalTarget)) naturalTarget = null;
+        List<BlockPos> targets = new ArrayList<>(live);
+        targets.sort(Comparator.comparingDouble(pos -> ctx.playerHead().distanceToSqr(VecUtils.getBlockPosCenter(pos))));
+        if (naturalTarget != null) { targets.remove(naturalTarget); targets.add(0, naturalTarget); }
+        for (BlockPos pos : targets) {
+            var state = BlockStateInterface.get(ctx, pos);
+            if (MovementHelper.avoidBreaking(baritone.bsi, pos.getX(), pos.getY(), pos.getZ(), state)) continue;
+            var rotation = naturalReachable(pos);
+            if (rotation.isEmpty()) continue;
+            naturalTarget = pos;
+            naturalViewPitch = rotation.get().getPitch();
+            baritone.getLookBehavior().updateTarget(rotation.get(), true);
+            MovementHelper.switchToBestToolFor(ctx, state);
+            if (ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rotation.get())) naturalAttackHeld = true;
+            if (naturalAttackHeld)
+                baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
+            return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+        }
+        // The visible surface changed or the stance was obstructed. Fall back to
+        // normal mining rather than waiting indefinitely with no reachable face.
+        naturalBatch = null;
+        naturalStance = naturalTarget = null;
+        naturalAttackHeld = false;
+        naturalRetryAfter = ctx.player().tickCount + 40;
+        return null;
+    }
+
+    private BlockPos naturalWorkingStance(List<BlockPos> batch) {
+        BlockPos anchor = batch.get(0);
+        double reach = ctx.playerController().getBlockReachDistance() - .25;
+        BlockPos best = null;
+        double bestScore = Double.POSITIVE_INFINITY;
+        int floorY = ctx.playerFeet().y;
+        var eyeOffset = ctx.playerHead().subtract(ctx.player().position());
+        for (int x = anchor.getX()-4; x <= anchor.getX()+4; x++) for (int z = anchor.getZ()-4; z <= anchor.getZ()+4; z++) {
+            BlockPos pos = new BlockPos(x, floorY, z);
+            var support = BlockStateInterface.get(ctx, pos.below());
+            if (!support.isFaceSturdy(ctx.world(), pos.below(), net.minecraft.core.Direction.UP) || MovementHelper.avoidWalkingInto(support)
+                    || !MovementHelper.fullyPassable(ctx, pos) || !MovementHelper.fullyPassable(ctx, pos.above())) continue;
+            var feet = new net.minecraft.world.phys.Vec3(x+.5, floorY, z+.5);
+            var eye = feet.add(eyeOffset);
+            if (batch.stream().anyMatch(ore -> eye.distanceToSqr(VecUtils.getBlockPosCenter(ore)) > reach*reach
+                    || Math.hypot(ore.getX()+.5-feet.x, ore.getZ()+.5-feet.z) < 2.1)) continue;
+            int visible = 0;
+            for (BlockPos ore : batch) {
+                var hit = ctx.world().clip(new net.minecraft.world.level.ClipContext(eye, VecUtils.getBlockPosCenter(ore),
+                        net.minecraft.world.level.ClipContext.Block.OUTLINE, net.minecraft.world.level.ClipContext.Fluid.NONE, ctx.player()));
+                if (hit.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK && hit.getBlockPos().equals(ore)) visible++;
+            }
+            if (visible == 0) continue;
+            double score = feet.distanceTo(ctx.player().position()) + (batch.size()-visible)*1.1
+                    + RouteVariation.value(Baritone.settings().naturalMovementSeed.value ^ 0x7381efL, x, z)*.8;
+            if (score < bestScore) { bestScore = score; best = pos; }
+        }
+        return best;
+    }
+
+    /** Geometric reachability, independent of how far the hand can turn this tick. */
+    private Optional<Rotation> naturalReachable(BlockPos pos) {
+        var center = VecUtils.calculateBlockCenter(ctx.world(), pos);
+        var random = new ForkableRandom(Baritone.settings().naturalMovementSeed.value ^ pos.asLong() ^ 0x7513abL);
+        var preferred = center.add((random.nextDouble()-.5)*.3, (random.nextDouble()-.5)*.2, (random.nextDouble()-.5)*.3);
+        double reach = ctx.playerController().getBlockReachDistance();
+        for (var point : new net.minecraft.world.phys.Vec3[]{preferred, center}) {
+            if (ctx.playerHead().distanceToSqr(point)>reach*reach) continue;
+            var hit = ctx.world().clip(new net.minecraft.world.level.ClipContext(ctx.playerHead(), point,
+                    net.minecraft.world.level.ClipContext.Block.OUTLINE, net.minecraft.world.level.ClipContext.Fluid.NONE, ctx.player()));
+            if (hit.getType()==net.minecraft.world.phys.HitResult.Type.BLOCK && hit.getBlockPos().equals(pos))
+                return Optional.of(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), point, ctx.playerRotations()));
+        }
+        return Optional.empty();
+    }
+
 
     private void updateLoucaSystem() {
         Map<BlockPos, Long> copy = new HashMap<>(anticipatedDrops);
@@ -167,6 +331,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     @Override
     public void onLostControl() {
+        if (isHoldingAttack() && ctx.player() != null) ctx.playerController().resetBlockRemoving();
         mine(0, (BlockOptionalMetaLookup) null);
     }
 
@@ -516,6 +681,13 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.branchPoint = null;
         this.branchPointRunaway = null;
         this.anticipatedDrops = new HashMap<>();
+        this.naturalBatch = null;
+        this.naturalStance = this.naturalTarget = null;
+        this.naturalDropArea = Collections.emptyList();
+        this.naturalCollecting = false;
+        this.naturalAttackHeld = false;
+        this.naturalViewPitch = null;
+        this.naturalRetryAfter = 0;
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));
         }
