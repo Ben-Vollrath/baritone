@@ -53,6 +53,34 @@ public final class NaturalMovementBehavior extends Behavior {
     public java.util.Map<String, Object> status() { return java.util.Map.of("decision", decision, "jumps", jumps, "hopping", hopping,
             "lookaheadSteps", lookahead, "steeringX", steeringX, "steeringZ", steeringZ); }
 
+    /** Elevated base speed needs an ordinary walking pace near turns and stops. */
+    public boolean shouldSneakForPrecision() {
+        var player = ctx.player();
+        if (!Baritone.settings().naturalMovement.value || player == null || player.getSpeed() <= .18
+                || player.isInWater() || player.isInLava() || player.isFallFlying() || player.isPassenger()
+                || !baritone.getPathingBehavior().isPathing()) return false;
+        var heading = baritone.getLookBehavior().requestedRotation();
+        if (heading.isPresent() && Math.abs(Rotation.normalizeYaw(heading.get().getYaw() - player.getYRot())) > 15) return true;
+        var executor = baritone.getPathingBehavior().getCurrent();
+        if (executor == null) return false;
+        var movements = executor.getPath().movements();
+        int index = executor.getPosition();
+        if (index < 0 || index >= movements.size()) return false;
+        var current = movements.get(index);
+        if (!(current instanceof MovementTraverse || current instanceof MovementDiagonal)
+                || current.getDirection().getY() != 0) return true;
+        var end = current.getDest();
+        for (int i = index + 1; i < movements.size() && i <= index + 7; i++) {
+            var next = movements.get(i);
+            if (!MovementHelper.naturalLookaheadSafe(ctx, next) || !next.getDirection().equals(current.getDirection())) break;
+            end = next.getDest();
+        }
+        // Begin slowing before the remaining momentum can carry us through the
+        // corner. Once crouched, the minimum distance keeps the decision stable.
+        double approach = Math.max(3.5, player.getDeltaMovement().horizontalDistance() * 5);
+        return Math.hypot(end.x + .5 - player.getX(), end.z + .5 - player.getZ()) < approach;
+    }
+
     @Override public void onWorldEvent(WorldEvent event) { reset(); }
 
     public BetterBlockPos projectFeet(BetterBlockPos actual) {
@@ -101,6 +129,7 @@ public final class NaturalMovementBehavior extends Behavior {
                 || player.getDeltaMovement().horizontalDistanceSqr() < 0.015 || player.getFoodData().getFoodLevel() <= 10
                 || player.isInWater() || player.isInLava() || player.isCrouching() || player.isPassenger()
                 || !player.getActiveEffects().isEmpty() || player.horizontalCollision) return;
+        if (!sprintJumpGainsSpeed(player.getSpeed())) { decision = "grounded sprint is faster"; return; }
         var input = baritone.getInputOverrideHandler();
         if (!input.isInputForcedDown(Input.MOVE_FORWARD) || input.isInputForcedDown(Input.SNEAK)
                 || input.isInputForcedDown(Input.CLICK_LEFT) || input.isInputForcedDown(Input.CLICK_RIGHT)) return;
@@ -157,5 +186,20 @@ public final class NaturalMovementBehavior extends Behavior {
                 || floor.is(Blocks.HONEY_BLOCK) || floor.is(Blocks.SLIME_BLOCK)) return false;
         for (int y = 0; y <= 3; y++) if (!MovementHelper.fullyPassable(ctx, pos.above(y))) return false;
         return true;
+    }
+
+    private static boolean sprintJumpGainsSpeed(double acceleration) {
+        // Ordinary solid-floor friction, sprint jump impulse and air input.
+        // Base-speed boosts improve grounded acceleration without improving air
+        // input equally. Estimate one twelve-tick flight before adding a hop.
+        double grounded = acceleration / (1 - .546);
+        double velocity = grounded * .546 + .2;
+        double distance = 0;
+        for (int tick = 0; tick < 12; tick++) {
+            velocity += .026;
+            distance += velocity;
+            velocity *= .91;
+        }
+        return distance / 12 > grounded * 1.05;
     }
 }
