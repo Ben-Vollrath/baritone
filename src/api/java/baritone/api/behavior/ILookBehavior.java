@@ -50,4 +50,7 @@ public interface ILookBehavior extends IBehavior {
 
     /** Begin a new movement job without carrying its predecessor's steering momentum. */
     default void resetSteering() {}
+
+    /** Whether navigation has finished its initial observation/turn reaction. */
+    default boolean isReadyForMovement(Rotation rotation) { return true; }
 }

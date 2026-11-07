@@ -143,8 +143,9 @@ public abstract class Movement implements IMovement, MovementHelper {
             currentState.getTarget().getRotation().ifPresent(rotation -> {
                 Rotation actual = baritone.getLookBehavior().getAimProcessor().peekRotation(rotation);
                 double remainingTurn = Math.abs(Rotation.normalizeYaw(rotation.getYaw() - actual.getYaw()));
-                if (remainingTurn > 15) {
-                    if (Baritone.settings().naturalMovement.value && remainingTurn < 75
+                boolean ready = baritone.getLookBehavior().isReadyForMovement(rotation);
+                if (!ready || remainingTurn > 15) {
+                    if (ready && Baritone.settings().naturalMovement.value && remainingTurn < 75
                             && currentState.getStatus() == MovementStatus.RUNNING
                             && !currentState.getTarget().hasToForceRotations()
                             && this instanceof baritone.pathing.movement.movements.MovementTraverse

@@ -2,6 +2,7 @@
 package baritone.behavior;
 
 import baritone.Baritone;
+import baritone.behavior.look.NaturalAim;
 import baritone.api.event.events.TickEvent;
 import baritone.api.event.events.WorldEvent;
 import baritone.api.utils.BetterBlockPos;
@@ -76,14 +77,14 @@ public final class NaturalMovementBehavior extends Behavior {
             seed = Baritone.settings().naturalMovementSeed.value;
             random = new ForkableRandom(seed ^ 0x52ca89e7L);
             gazeRandom = new ForkableRandom(seed ^ 0x789e38abL);
-            walkingPitch = (float) (4 + gazeRandom.nextDouble() * 5);
+            walkingPitch = NaturalAim.walkingPitch(seed);
             nextGaze = player.tickCount + 55 + (int) (gazeRandom.nextDouble() * 90);
             nextJump = player.tickCount + 5 + (int) (random.nextDouble() * 8);
         }
         if (baritone.getPathingBehavior().isPathing() && player.tickCount >= nextGaze) {
             double choice = gazeRandom.nextDouble();
             walkingPitch = (float) (choice < .2 ? -1 + gazeRandom.nextDouble() * 4
-                    : choice < .8 ? 4 + gazeRandom.nextDouble() * 5 : 9 + gazeRandom.nextDouble() * 4);
+                    : choice < .8 ? NaturalAim.walkingPitch(seed) + (gazeRandom.nextDouble()-.5)*4 : 9 + gazeRandom.nextDouble() * 4);
             nextGaze = player.tickCount + 55 + (int) (gazeRandom.nextDouble() * 125);
         }
         if (!Baritone.settings().naturalSprintJump.value) { hopping = false; decision = "disabled"; return; }
