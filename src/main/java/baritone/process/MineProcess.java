@@ -77,8 +77,13 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private BlockPos naturalAimBlock;
     private Direction naturalAimFace;
     private BlockPos naturalAdvanceOre, naturalAdvanceNext;
+    private BlockPos naturalApproachOre;
     private Vec3 naturalAdvanceOrigin, naturalAdvancePoint;
     private int naturalAdvanceAfter;
+    private int naturalBatchId;
+    private boolean naturalApproaching, naturalWorkingEstablished;
+    private BlockPos naturalAcquireOre;
+    private int naturalAcquireTick=-1, naturalAcquireTicks;
 
     public MineProcess(Baritone baritone) {
         super(baritone);
@@ -91,6 +96,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     @Override
     public PathingCommand onTick(boolean calcFailed, boolean isSafeToCancel) {
+        naturalApproaching=false;
         if (desiredQuantity > 0) {
             int curr = ctx.player().getInventory().getNonEquipmentItems().stream()
                     .filter(stack -> filter.has(stack))
@@ -177,10 +183,15 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     }
 
     public String naturalPhase() {
-        return !isActive() ? "idle" : naturalCollecting ? "collect" : naturalTarget != null ? "harvest" : naturalStance != null ? "approach" : "search";
+        return !isActive() ? "idle" : naturalCollecting ? "collect" : naturalApproaching ? "approach"
+                : naturalTarget != null ? "harvest" : naturalStance != null ? "approach" : "search";
     }
 
     public Optional<Float> naturalViewPitch() { return Optional.ofNullable(naturalViewPitch); }
+
+    public BlockPos naturalMiningTarget() { return naturalTarget!=null ? naturalTarget : naturalApproachOre; }
+    public BlockPos naturalNextOre() { return naturalAdvanceNext; }
+    public int naturalMiningBatchId() { return naturalBatch==null ? -1 : naturalBatchId; }
 
     /** Sustained attack from the first acquired ore until the cluster finishes. */
     public boolean isHoldingAttack() {
@@ -230,9 +241,21 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 }
             } while (added && batch.size() < maximum);
             BlockPos stance = naturalWorkingStance(batch);
+            // A connected vein need not fit within one safe working radius.
+            // Keep a reachable portion instead of abandoning the working-area
+            // policy and letting ordinary path mining break the closest ore.
+            while (stance==null && batch.size()>1) {
+                BlockPos fringe=batch.stream().filter(pos->!pos.equals(anchor))
+                        .max(Comparator.comparingDouble(anchor::distSqr)).orElseThrow();
+                batch.remove(fringe);
+                stance=naturalWorkingStance(batch);
+            }
             if (stance == null) return null;
             naturalBatch = batch;
+            naturalBatchId++;
             naturalStance = stance;
+            naturalApproachOre = null;
+            naturalWorkingEstablished = false;
             naturalAdvanceOre = null;
             naturalAdvancePoint = null;
         }
@@ -242,24 +265,37 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             naturalDropArea = naturalBatch;
             naturalBatch = null;
             naturalStance = naturalTarget = null;
+            naturalApproachOre = null;
             // Servers that deliver resources directly to inventory have no
             // collection route. Honor the same policy as the original miner.
             naturalCollecting = Baritone.settings().mineScanDroppedItems.value;
-            if (!naturalCollecting) return null;
-            naturalCollectionUntil = System.currentTimeMillis() + 1000;
+            if (naturalCollecting) naturalCollectionUntil = System.currentTimeMillis() + 1000;
+            // Direct delivery can select the next working area immediately.
+            // Falling through for one tick would start a path into a solid ore.
             return naturalBatchTick(known, safeToCancel);
+        }
+        if (naturalTarget != null && !live.contains(naturalTarget)) {
+            naturalTarget=naturalAdvanceNext!=null && live.contains(naturalAdvanceNext) ? naturalAdvanceNext : null;
+            naturalApproachOre=naturalTarget;
         }
         double reach = ctx.playerController().getBlockReachDistance();
         boolean inRange = live.stream().allMatch(pos -> ctx.playerHead().distanceToSqr(VecUtils.getBlockPosCenter(pos)) < (reach-.1)*(reach-.1));
         boolean inWorkingArea = ctx.playerFeet().equals(naturalStance)
-                || naturalAttackHeld && ctx.playerFeet().getY()==naturalStance.getY()
+                || naturalAttackHeld && naturalWorkingEstablished && ctx.playerFeet().getY()==naturalStance.getY()
                 && Math.hypot(ctx.player().getX()-naturalStance.getX()-.5,ctx.player().getZ()-naturalStance.getZ()-.5)<naturalWorkingRadius();
         if (!inWorkingArea || !inRange || !ctx.player().onGround() || !safeToCancel) {
-            naturalAttackHeld = false;
             naturalAdvancePoint = null;
+            if (ctx.player().onGround() && safeToCancel && ctx.playerFeet().getY()==naturalStance.getY()
+                    && Math.hypot(ctx.player().getX()-naturalStance.getX()-.5,ctx.player().getZ()-naturalStance.getZ()-.5)<reach+1
+                    && naturalMiningApproach(live)) return new PathingCommand(null,PathingCommandType.REQUEST_PAUSE);
+            naturalAttackHeld = false;
+            naturalTarget = null;
+            naturalWorkingEstablished = false;
+            baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT,false);
             return new PathingCommand(new GoalBlock(naturalStance), PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
-        if (naturalTarget != null && !live.contains(naturalTarget)) naturalTarget = null;
+        naturalWorkingEstablished=true;
+        if (naturalTarget==null && live.contains(naturalApproachOre)) naturalTarget=naturalApproachOre;
         List<BlockPos> targets = new ArrayList<>(live);
         targets.sort(Comparator.comparingDouble(pos -> ctx.playerHead().distanceToSqr(VecUtils.getBlockPosCenter(pos))));
         if (naturalTarget != null) { targets.remove(naturalTarget); targets.add(0, naturalTarget); }
@@ -272,8 +308,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             naturalViewPitch = rotation.get().getPitch();
             baritone.getLookBehavior().updateTarget(rotation.get(), true);
             MovementHelper.switchToBestToolFor(ctx, state);
-            if ((ctx.isLookingAt(pos) || ctx.playerRotations().isReallyCloseTo(rotation.get()))
-                    && baritone.getLookBehavior().isReadyForInteraction()) naturalAttackHeld = true;
+            if (naturalAcquire(pos)) naturalAttackHeld = true;
             if (naturalAttackHeld)
                 baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
             if (naturalAttackHeld) naturalMiningAdvance(live);
@@ -320,7 +355,11 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     /** Geometric reachability, independent of how far the hand can turn this tick. */
     private Optional<Rotation> naturalReachable(BlockPos pos) {
-        if (pos.equals(naturalAimBlock) && naturalAimFace!=null) {
+        var facing=ctx.playerHead().subtract(VecUtils.getBlockPosCenter(pos)).normalize();
+        double cachedArea=naturalAimFace==null ? -1 : facing.x*naturalAimFace.getStepX()
+                +facing.y*naturalAimFace.getStepY()+facing.z*naturalAimFace.getStepZ();
+        double broadestArea=Math.max(Math.abs(facing.x),Math.max(Math.abs(facing.y),Math.abs(facing.z)));
+        if (pos.equals(naturalAimBlock) && naturalAimFace!=null && (naturalAttackHeld || cachedArea>=broadestArea-.25)) {
             var rotation=naturalVisiblePoint(pos,naturalFacePoint(pos,naturalAimFace),naturalAimFace);
             if (rotation.isPresent()) return rotation;
         }
@@ -328,7 +367,6 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         Direction bestFace=null;
         double bestScore=Double.POSITIVE_INFINITY;
         var candidates=new EnumMap<Direction,Rotation>(Direction.class);
-        var facing=ctx.playerHead().subtract(VecUtils.getBlockPosCenter(pos)).normalize();
         double broadest=-1;
         for (Direction face:Direction.values()) {
             var rotation=naturalVisiblePoint(pos,naturalFacePoint(pos,face),face);
@@ -383,8 +421,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     private void naturalMiningAdvance(List<BlockPos> ores) {
         ctx.player().setSprinting(false);
-        BlockPos next=ores.stream().filter(pos->!pos.equals(naturalTarget))
-                .min(Comparator.comparingDouble(naturalTarget::distSqr)).orElse(null);
+        BlockPos next=naturalNextMiningOre(ores,naturalTarget);
         if (next==null) { naturalAdvanceNext=null; naturalAdvancePoint=null; return; }
         if (naturalAdvancePoint==null || !naturalTarget.equals(naturalAdvanceOre) || !next.equals(naturalAdvanceNext)) {
             naturalAdvanceOre=naturalTarget; naturalAdvanceNext=next;
@@ -419,6 +456,73 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
     }
 
+    private BlockPos naturalNextMiningOre(List<BlockPos> ores,BlockPos current) {
+        return ores.stream().filter(pos->!pos.equals(current)).filter(this::naturalHasVisibleFace)
+                .min(Comparator.comparingDouble(current::distSqr)).orElse(null);
+    }
+
+    /** A stable hit on the ore is enough; tracking a moving body need not settle. */
+    private boolean naturalAcquire(BlockPos ore) {
+        int tick=ctx.player().tickCount;
+        boolean looking=ctx.isLookingAt(ore);
+        if (tick!=naturalAcquireTick) {
+            if (!looking) naturalAcquireTicks=0;
+            else if (ore.equals(naturalAcquireOre) && tick==naturalAcquireTick+1) naturalAcquireTicks++;
+            else naturalAcquireTicks=1;
+            naturalAcquireTick=tick;
+            naturalAcquireOre=looking ? ore : null;
+        }
+        return looking && ore.equals(naturalAcquireOre) && naturalAcquireTicks>=2;
+    }
+
+    private boolean naturalHasVisibleFace(BlockPos pos) {
+        for (var face:Direction.values())
+            if (naturalVisiblePoint(pos,naturalFacePoint(pos,face),face).isPresent()) return true;
+        return false;
+    }
+
+    /** Face the vein while the keys, including A/D, finish the close approach. */
+    private boolean naturalMiningApproach(List<BlockPos> ores) {
+        var candidates=new ArrayList<>(ores);
+        candidates.sort(Comparator.comparingDouble(pos->ctx.playerHead().distanceToSqr(VecUtils.getBlockPosCenter(pos))));
+        if (naturalApproachOre!=null && candidates.remove(naturalApproachOre)) candidates.add(0,naturalApproachOre);
+        if (naturalTarget!=null && candidates.remove(naturalTarget)) candidates.add(0,naturalTarget);
+        for (var ore:candidates) {
+            var rotation=naturalReachable(ore);
+            if (rotation.isEmpty()) continue;
+            naturalApproachOre=ore;
+            naturalTarget=ore;
+            naturalApproaching=true;
+            naturalViewPitch=rotation.get().getPitch();
+            baritone.getLookBehavior().updateTarget(rotation.get(),true);
+            MovementHelper.switchToBestToolFor(ctx,BlockStateInterface.get(ctx,ore));
+            if (naturalAcquire(ore)) naturalAttackHeld=true;
+            if (naturalAttackHeld) baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT,true);
+            naturalAdvanceNext=naturalNextMiningOre(ores,ore);
+            ctx.player().setSprinting(false);
+            Vec3 coast=ctx.player().position().add(ctx.player().getDeltaMovement().scale(1/.454));
+            Vec3 remaining=new Vec3(naturalStance.getX()+.5-coast.x,0,naturalStance.getZ()+.5-coast.z);
+            if (remaining.horizontalDistance()<.15) return true;
+            double yaw=Math.toRadians(ctx.player().getYRot());
+            var options=MovementOption.getOptions((float)Math.sin(yaw),(float)Math.cos(yaw),false)
+                    .sorted(Comparator.comparingDouble((MovementOption option)->
+                            -(-option.motionX()*remaining.x+option.motionZ()*remaining.z)/Math.hypot(option.motionX(),option.motionZ()))).toList();
+            for (var option:options) {
+                double length=Math.hypot(option.motionX(),option.motionZ());
+                if ((-option.motionX()*remaining.x+option.motionZ()*remaining.z)/length<remaining.horizontalDistance()*.35) continue;
+                double dx=-option.motionX()/length*naturalMiningSpeed()/.454+ctx.player().getDeltaMovement().x/.454;
+                double dz=option.motionZ()/length*naturalMiningSpeed()/.454+ctx.player().getDeltaMovement().z/.454;
+                if (!naturalFloorStepSafe(dx,dz)) continue;
+                baritone.getInputOverrideHandler().setInputForceState(option.input1(),true);
+                if (option.input2()!=null) baritone.getInputOverrideHandler().setInputForceState(option.input2(),true);
+                return true;
+            }
+            naturalApproaching=false;
+            return false;
+        }
+        return false;
+    }
+
     private double naturalWorkingRadius() {
         return naturalBatch==null ? 1.5 : Math.max(1.5,1+naturalBatch.size()*.6);
     }
@@ -450,6 +554,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         double reach=ctx.playerController().getBlockReachDistance()-.15;
         if (ores.stream().anyMatch(ore->eye.distanceToSqr(VecUtils.getBlockPosCenter(ore))>reach*reach
                 || Math.hypot(future.x-ore.getX()-.5,future.z-ore.getZ()-.5)<1.8)) return false;
+        return naturalFloorStepSafe(dx,dz);
+    }
+
+    private boolean naturalFloorStepSafe(double dx,double dz) {
         var box=ctx.player().getBoundingBox().expandTowards(dx,0,dz);
         if (!ctx.world().noCollision(ctx.player(),box)) return false;
         for (int x=(int)Math.floor(box.minX);x<=Math.floor(box.maxX);x++) for (int z=(int)Math.floor(box.minZ);z<=Math.floor(box.maxZ);z++) {
@@ -846,6 +954,12 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.naturalAimFace=null;
         this.naturalAdvanceOre=this.naturalAdvanceNext=null;
         this.naturalAdvanceOrigin=this.naturalAdvancePoint=null;
+        this.naturalApproachOre=null;
+        this.naturalBatchId=0;
+        this.naturalApproaching=this.naturalWorkingEstablished=false;
+        this.naturalAcquireOre=null;
+        this.naturalAcquireTick=-1;
+        this.naturalAcquireTicks=0;
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));
         }
