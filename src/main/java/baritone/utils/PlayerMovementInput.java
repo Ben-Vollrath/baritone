@@ -56,11 +56,9 @@ public class PlayerMovementInput extends ClientInput {
         }
 
         boolean sneaking = handler.isInputForcedDown(Input.SNEAK);
-        if (sneaking) {
-            leftImpulse *= 0.3D;
-            forwardImpulse *= 0.3D;
-        }
-        this.moveVector = new Vec2(leftImpulse, forwardImpulse);
+        // Match KeyboardInput. LocalPlayer applies sneaking and item-use
+        // modifiers later; applying crouch here would slow movement twice.
+        this.moveVector = new Vec2(leftImpulse, forwardImpulse).normalized();
 
         boolean sprinting = handler.isInputForcedDown(Input.SPRINT);
 

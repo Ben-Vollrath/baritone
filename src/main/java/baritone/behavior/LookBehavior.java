@@ -112,6 +112,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         boolean aligned = Math.abs(Rotation.normalizeYaw(target.rotation.getYaw() - actual.getYaw())) <= 1.0
                 && Math.abs(target.rotation.getPitch() - actual.getPitch()) <= 1.0;
         if (!Baritone.settings().naturalMovement.value) return aligned;
+        aligned &= Math.abs(processor.yawVelocity)<=1.2 && Math.abs(processor.pitchVelocity)<=1.2;
         if (lastInteractionTick != ctx.player().tickCount) {
             interactionReadyTicks = aligned ? (ctx.player().tickCount - lastInteractionTick > 1 ? 1 : interactionReadyTicks + 1) : 0;
             lastInteractionTick = ctx.player().tickCount;
@@ -392,10 +393,12 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                     desiredYaw = (float) intention.yaw();
                     double yawError = intention.unwrapped() ? desiredYaw-prev.getYaw() : SmoothRotation.wrapDegrees(desiredYaw-prev.getYaw());
                     var response = motor == null ? NaturalSteering.parameters(Baritone.settings().naturalMovementSeed.value, speed, acceleration) : motor;
+                    double stiffness=precise ? .35 : response.stiffness();
+                    double damping=precise ? 1.0 : response.damping();
                     yawStep = NaturalSteering.step(yawError, yawVelocity,
-                            yawAcceleration, response.stiffness(), response.damping(), response.speedLimit(), response.accelerationLimit());
+                            yawAcceleration, stiffness, damping, response.speedLimit(), response.accelerationLimit());
                     pitchStep = NaturalSteering.step(Rotation.clampPitch(desiredPitch) - prev.getPitch(), pitchVelocity,
-                            pitchAcceleration, response.stiffness(), response.damping(), response.speedLimit(), response.accelerationLimit());
+                            pitchAcceleration, stiffness, damping, response.speedLimit(), response.accelerationLimit());
                 }
                 // Finish within half a mouse count instead of stalling in the proportional arrival zone.
                 double mouseCount = mouseToAngle(1);

@@ -61,6 +61,7 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
      */
     @Override
     public final boolean isInputForcedDown(Input input) {
+        if ((input==Input.SNEAK || input==Input.SPRINT) && baritone.getMineProcess().shouldSneakForPrecision()) return input==Input.SNEAK;
         return input == null ? false : this.inputForceStateMap.getOrDefault(input, false);
     }
 
