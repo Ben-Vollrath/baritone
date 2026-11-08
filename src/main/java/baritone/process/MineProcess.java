@@ -26,6 +26,7 @@ import baritone.api.process.PathingCommandType;
 import baritone.api.utils.*;
 import baritone.api.utils.input.Input;
 import baritone.cache.CachedChunk;
+import baritone.cache.FasterWorldScanner;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.MovementHelper;
 import baritone.pathing.movement.MovementOption;
@@ -808,7 +809,13 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
         locs = prune(ctx, locs, filter, max, blacklist, dropped);
 
-        if (!untracked.isEmpty() || (Baritone.settings().extendCacheOnThreshold.value && locs.size() < max)) {
+        if (Baritone.settings().naturalMovement.value) {
+            // A full cache can consist of distant underground ore. Refresh
+            // loaded candidates before truncation so nearby visible veins are
+            // not excluded merely because another chunk filled the budget.
+            locs.addAll(FasterWorldScanner.INSTANCE.scanNearestLoaded(
+                    ctx.getBaritone().getPlayerContext(),filter,max,32));
+        } else if (!untracked.isEmpty() || (Baritone.settings().extendCacheOnThreshold.value && locs.size() < max)) {
             locs.addAll(BaritoneAPI.getProvider().getWorldScanner().scanChunkRadius(
                     ctx.getBaritone().getPlayerContext(),
                     filter,

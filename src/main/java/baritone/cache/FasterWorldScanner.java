@@ -35,6 +35,9 @@ import net.minecraft.world.level.chunk.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Comparator;
+import java.util.PriorityQueue;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -42,6 +45,52 @@ public enum FasterWorldScanner implements IWorldScanner {
     INSTANCE;
 
     private static final BlockState[] PALETTE_REGISTRY_SENTINEL = new BlockState[0];
+
+    /** Find the nearest matches without collecting every matching block in the loaded world. */
+    public List<BlockPos> scanNearestLoaded(IPlayerContext ctx, BlockOptionalMetaLookup filter, int max, int chunkRadius) {
+        if (chunkRadius < 0) throw new IllegalArgumentException("chunkRange must be >= 0");
+        if (max <= 0 || filter.blocks().isEmpty()) return List.of();
+        var origin = ctx.playerFeet();
+        var sections = new ArrayList<ScanSection>();
+        var chunks = ctx.world().getChunkSource();
+        for (var pos : getChunkRange(origin.x >> 4, origin.z >> 4, chunkRadius)) {
+            LevelChunk chunk = chunks.getChunk(pos.x(), pos.z(), false);
+            if (chunk == null || chunk.isEmpty()) continue;
+            var contents = chunk.getSections();
+            int x = pos.x() << 4, z = pos.z() << 4;
+            for (int i = 0; i < contents.length; i++) {
+                var section = contents[i];
+                if (section == null || section.hasOnlyAir() || !section.maybeHas(filter::has)) continue;
+                int y = chunk.getMinY() + i * 16;
+                double dx = distanceToInterval(origin.x, x), dy = distanceToInterval(origin.y, y), dz = distanceToInterval(origin.z, z);
+                sections.add(new ScanSection(section, x, y, z, dx * dx + dy * dy + dz * dz));
+            }
+        }
+        sections.sort(Comparator.comparingDouble(ScanSection::minimumDistanceSquared));
+        var order = Comparator.<BlockPos>comparingDouble(origin::distSqr).thenComparingLong(BlockPos::asLong);
+        var nearest = new PriorityQueue<BlockPos>(Math.min(max, 64), order.reversed());
+        Consumer<BlockPos> accept = pos -> {
+            if (nearest.size() < max) nearest.add(pos);
+            else if (order.compare(pos, nearest.peek()) < 0) {
+                nearest.remove();
+                nearest.add(pos);
+            }
+        };
+        for (var section : sections) {
+            // Equal-distance sections still matter for the deterministic position tie-break.
+            if (nearest.size() == max && section.minimumDistanceSquared() > origin.distSqr(nearest.peek())) break;
+            visitSection(filter, section.section(), accept, section.x(), section.y(), section.z());
+        }
+        var result = new ArrayList<>(nearest);
+        result.sort(order);
+        return result;
+    }
+
+    private record ScanSection(LevelChunkSection section, int x, int y, int z, double minimumDistanceSquared) {}
+
+    private static double distanceToInterval(int coordinate, int minimum) {
+        return coordinate < minimum ? (double) minimum - coordinate : Math.max(0, (double) coordinate - minimum - 15);
+    }
 
     @Override
     public List<BlockPos> scanChunkRadius(IPlayerContext ctx, BlockOptionalMetaLookup filter, int max, int yLevelThreshold, int maxSearchRadius) {
@@ -165,16 +214,16 @@ public enum FasterWorldScanner implements IWorldScanner {
         int j = playerSection;
         for (; i >= 0 || j < l; ++j, --i) {
             if (j < l) {
-                visitSection(lookup, sections[j], blocks, chunkX, chunkY + j * 16, chunkZ);
+                visitSection(lookup, sections[j], blocks::add, chunkX, chunkY + j * 16, chunkZ);
             }
             if (i >= 0) {
-                visitSection(lookup, sections[i], blocks, chunkX, chunkY + i * 16, chunkZ);
+                visitSection(lookup, sections[i], blocks::add, chunkX, chunkY + i * 16, chunkZ);
             }
         }
         return blocks;
     }
 
-    private void visitSection(BlockOptionalMetaLookup lookup, LevelChunkSection section, List<BlockPos> blocks, long chunkX, int sectionY, long chunkZ) {
+    private void visitSection(BlockOptionalMetaLookup lookup, LevelChunkSection section, Consumer<BlockPos> blocks, long chunkX, int sectionY, long chunkZ) {
         if (section == null || section.hasOnlyAir()) {
             return;
         }
@@ -194,7 +243,7 @@ public enum FasterWorldScanner implements IWorldScanner {
                 for (int x = 0; x < 16; ++x) {
                     for (int y = 0; y < 16; ++y) {
                         for (int z = 0; z < 16; ++z) {
-                            blocks.add(new BlockPos(
+                            blocks.accept(new BlockPos(
                                 (int) chunkX + x,
                                 sectionY + y,
                                 (int) chunkZ + z
@@ -223,7 +272,7 @@ public enum FasterWorldScanner implements IWorldScanner {
                 int value = (int) ((l >> offset) & maxEntryValue);
                 if (isInFilter[value]) {
                     //noinspection DuplicateExpressions
-                    blocks.add(new BlockPos(
+                    blocks.accept(new BlockPos(
                         (int) chunkX + ((idx & 255) & 15),
                         sectionY + (idx >> 8),
                         (int) chunkZ + ((idx & 255) >> 4)
