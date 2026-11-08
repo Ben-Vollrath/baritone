@@ -152,23 +152,33 @@ public final class NaturalMovementBehavior extends Behavior {
         decision = "turning";
         if (Math.abs(Rotation.normalizeYaw(desiredYaw - player.getYRot())) > 6) return;
         int ground = current.getSrc().y;
+        double length = Math.hypot(direction.getX(), direction.getZ());
+        double sideX = -direction.getZ() / length, sideZ = direction.getX() / length;
+        double lateral = (player.getX() - current.getSrc().x - .5) * sideX
+                + (player.getZ() - current.getSrc().z - .5) * sideZ;
+        double yaw = Math.toRadians(player.getYRot());
+        double sideVelocity = player.getDeltaMovement().x * sideX + player.getDeltaMovement().z * sideZ
+                + .2 * (-Math.sin(yaw) * sideX + Math.cos(yaw) * sideZ);
+        double landingLateral = lateral + sideVelocity * 12;
         decision = "runway obstacle, turn or edge";
         for (int i = index; i < index + runwaySteps; i++) {
             var next = movements.get(i);
             if (!(next instanceof MovementTraverse || next instanceof MovementDiagonal)
                     || !MovementHelper.naturalLookaheadSafe(ctx, next)
                     || !next.getDirection().equals(direction) || next.getDest().y != ground) return;
-            // Include side columns: hops are optional, so a narrow ledge is not a runway.
+            // Keep a broad supported floor, but check air against the swept body.
+            // A wall beside a supported path need not occupy the player's flight.
             for (int side = -1; side <= 1; side++) {
                 int ox = -direction.getZ() * side, oz = direction.getX() * side;
-                if (!hopColumnClear(next.getSrc().offset(ox, 0, oz)) || !hopColumnClear(next.getDest().offset(ox, 0, oz))) return;
+                if (!hopFloorSupported(next.getSrc().offset(ox, 0, oz)) || !hopFloorSupported(next.getDest().offset(ox, 0, oz))) return;
                 if (next instanceof MovementDiagonal) {
-                    // Check the cells swept between diagonal nodes at jump height,
-                    // including both corners rather than only the diagonal centers.
-                    if (!hopColumnClear(new BlockPos(next.getSrc().x + ox, ground, next.getDest().z + oz))
-                            || !hopColumnClear(new BlockPos(next.getDest().x + ox, ground, next.getSrc().z + oz))) return;
+                    // Check support between diagonal nodes, including both corners
+                    // rather than only the diagonal centers.
+                    if (!hopFloorSupported(new BlockPos(next.getSrc().x + ox, ground, next.getDest().z + oz))
+                            || !hopFloorSupported(new BlockPos(next.getDest().x + ox, ground, next.getSrc().z + oz))) return;
                 }
             }
+            if (!hopBodyClear(next.getSrc(), next.getDest(), sideX, sideZ, lateral, landingLateral)) return;
         }
         floorY = ground;
         hopStarted = player.tickCount;
@@ -179,12 +189,25 @@ public final class NaturalMovementBehavior extends Behavior {
         input.setInputForceState(Input.JUMP, true);
     }
 
-    private boolean hopColumnClear(BlockPos pos) {
+    private boolean hopFloorSupported(BlockPos pos) {
         var floor = ctx.world().getBlockState(pos.below());
         if (!floor.isFaceSturdy(ctx.world(), pos.below(), Direction.UP) || MovementHelper.avoidWalkingInto(floor)
                 || floor.is(Blocks.ICE) || floor.is(Blocks.PACKED_ICE) || floor.is(Blocks.BLUE_ICE)
                 || floor.is(Blocks.HONEY_BLOCK) || floor.is(Blocks.SLIME_BLOCK)) return false;
-        for (int y = 0; y <= 3; y++) if (!MovementHelper.fullyPassable(ctx, pos.above(y))) return false;
+        return true;
+    }
+
+    private boolean hopBodyClear(BlockPos from, BlockPos to, double sideX, double sideZ,
+                                 double lateral, double landingLateral) {
+        double margin = ctx.player().getBbWidth() / 2 + .15;
+        double minX = Math.min(from.getX(), to.getX()) + .5 + Math.min(sideX * lateral, sideX * landingLateral) - margin;
+        double maxX = Math.max(from.getX(), to.getX()) + .5 + Math.max(sideX * lateral, sideX * landingLateral) + margin;
+        double minZ = Math.min(from.getZ(), to.getZ()) + .5 + Math.min(sideZ * lateral, sideZ * landingLateral) - margin;
+        double maxZ = Math.max(from.getZ(), to.getZ()) + .5 + Math.max(sideZ * lateral, sideZ * landingLateral) + margin;
+        for (int x = (int) Math.floor(minX); x <= (int) Math.floor(maxX); x++)
+            for (int z = (int) Math.floor(minZ); z <= (int) Math.floor(maxZ); z++)
+                for (int y = from.getY(); y <= from.getY() + 3; y++)
+                    if (!MovementHelper.fullyPassable(ctx, new BlockPos(x, y, z))) return false;
         return true;
     }
 
