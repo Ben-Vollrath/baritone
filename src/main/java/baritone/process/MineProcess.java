@@ -85,9 +85,15 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private boolean naturalApproaching, naturalWorkingEstablished;
     private BlockPos naturalAcquireOre;
     private int naturalAcquireTick=-1, naturalAcquireTicks;
+    private boolean treeJob;
+    private final TreeCutter trees;
 
     public MineProcess(Baritone baritone) {
         super(baritone);
+        this.trees = new TreeCutter(baritone, this, state -> filter != null && filter.has(state), pos -> {
+            blacklist.add(pos);
+            knownOreLocations.remove(pos);
+        });
     }
 
     @Override
@@ -107,6 +113,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 cancel();
                 return null;
             }
+        }
+        if (calcFailed && treeJob && Baritone.settings().naturalMovement.value) {
+            trees.abandonTree();
+            calcFailed = false;
         }
         if (calcFailed && naturalStance != null) {
             // A good view does not imply a reachable standing position. Let the
@@ -154,6 +164,14 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
                 .filter(pos -> !(BlockStateInterface.get(ctx, pos).getBlock() instanceof AirBlock)) // after breaking a block, it takes mineGoalUpdateInterval ticks for it to actually update this list =(
                 .min(Comparator.comparingDouble(ctx.playerFeet().above()::distSqr));
         baritone.getInputOverrideHandler().clearAllKeys();
+        if (treeJob && Baritone.settings().naturalMovement.value) {
+            PathingCommand cutting = trees.tick(curr, isSafeToCancel);
+            if (cutting != null) return cutting;
+            // No log it can get to. Only dropped items are left to walk to, if any.
+            PathingCommand collecting = updateGoal();
+            if (collecting == null) cancel();
+            return collecting;
+        }
         if (Baritone.settings().naturalMovement.value) {
             PathingCommand batch = naturalBatchTick(curr, isSafeToCancel);
             if (batch != null) return batch;
@@ -184,24 +202,27 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     }
 
     public String naturalPhase() {
+        if (isActive() && treeJob && Baritone.settings().naturalMovement.value) return trees.phase();
         return !isActive() ? "idle" : naturalCollecting ? "collect" : naturalApproaching ? "approach"
                 : naturalTarget != null ? "harvest" : naturalStance != null ? "approach" : "search";
     }
 
     public Optional<Float> naturalViewPitch() { return Optional.ofNullable(naturalViewPitch); }
 
-    public BlockPos naturalMiningTarget() { return naturalTarget!=null ? naturalTarget : naturalApproachOre; }
+    public BlockPos naturalMiningTarget() { return treeJob ? trees.target() : naturalTarget!=null ? naturalTarget : naturalApproachOre; }
     public BlockPos naturalNextOre() { return naturalAdvanceNext; }
-    public int naturalMiningBatchId() { return naturalBatch==null ? -1 : naturalBatchId; }
+    public int naturalMiningBatchId() { return treeJob ? trees.treesStarted() : naturalBatch==null ? -1 : naturalBatchId; }
 
     /** Sustained attack from the first acquired ore until the cluster finishes. */
     public boolean isHoldingAttack() {
+        if (treeJob) return isActive() && Baritone.settings().naturalMovement.value && trees.isHoldingAttack();
         return isActive() && Baritone.settings().naturalMovement.value && naturalAttackHeld && naturalTarget != null && !naturalCollecting;
     }
 
     /** Slow the close approach as well as the precision work itself. */
     public boolean shouldSneakForPrecision() {
         if (!isActive() || !Baritone.settings().naturalMovement.value || ctx.player()==null || ctx.player().getSpeed()<=.18) return false;
+        if (treeJob) return trees.closing();
         if (naturalAttackHeld || naturalTarget!=null) return true;
         double range=ctx.playerController().getBlockReachDistance()+1;
         return knownOreLocations!=null && knownOreLocations.stream().anyMatch(pos->filter.has(BlockStateInterface.get(ctx,pos))
@@ -560,7 +581,12 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     private boolean naturalFloorStepSafe(double dx,double dz) {
         var box=ctx.player().getBoundingBox().expandTowards(dx,0,dz);
-        if (!ctx.world().noCollision(ctx.player(),box)) return false;
+        return ctx.world().noCollision(ctx.player(),box) && naturalFloorSupported(dx,dz);
+    }
+
+    /** Solid, harmless ground under the body's sweep, whether or not something stops it on the way. */
+    boolean naturalFloorSupported(double dx,double dz) {
+        var box=ctx.player().getBoundingBox().expandTowards(dx,0,dz);
         for (int x=(int)Math.floor(box.minX);x<=Math.floor(box.maxX);x++) for (int z=(int)Math.floor(box.minZ);z<=Math.floor(box.maxZ);z++) {
             var floor=new BlockPos(x,ctx.playerFeet().getY()-1,z);
             var state=ctx.world().getBlockState(floor);
@@ -620,7 +646,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             return new PathingCommand(goal, legit ? PathingCommandType.FORCE_REVALIDATE_GOAL_AND_PATH : PathingCommandType.REVALIDATE_GOAL_AND_PATH);
         }
         // we don't know any ore locations at the moment
-        if (!legit && !Baritone.settings().exploreForBlocks.value) {
+        if (treeJob || !legit && !Baritone.settings().exploreForBlocks.value) {
             return null;
         }
         // only when we should explore for blocks or are in legit mode we do this
@@ -664,7 +690,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         List<BlockPos> dropped = droppedItemsScan();
         List<BlockPos> locs = searchWorld(context, filter, Baritone.settings().mineMaxOreLocationsCount.value, already, blacklist, dropped);
         locs.addAll(dropped);
-        if (locs.isEmpty() && !Baritone.settings().exploreForBlocks.value) {
+        if (locs.isEmpty() && (treeJob || !Baritone.settings().exploreForBlocks.value)) {
             logDirect("No locations for " + filter + " known, cancelling");
             if (Baritone.settings().notificationOnMineFail.value) {
                 logNotification("No locations for " + filter + " known, cancelling", true);
@@ -967,6 +993,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.naturalAcquireOre=null;
         this.naturalAcquireTick=-1;
         this.naturalAcquireTicks=0;
+        this.treeJob=filter != null && !filter.blocks().isEmpty() && filter.blocks().stream()
+                .allMatch(block -> block.getBlock().defaultBlockState().is(net.minecraft.tags.BlockTags.LOGS));
+        this.trees.reset();
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));
         }

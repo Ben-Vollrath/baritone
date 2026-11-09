@@ -61,3 +61,8 @@ processor's preview/fork contracts. See DriftClient's `docs/movement.md` for set
 preferences. The in-game fixtures also cover standing aim, alternate routes,
 headroom, ledges, and a long runway. DriftClient can record rendered footage and
 build a local synchronized comparison with `dev/movement_review.py`.
+
+`MineProcess` hands natural-profile jobs on log blocks to `TreeCutter`, with its choices in
+`TreeCutModel`. It follows Drift's recorded cut orders, stands under or against the trunk, and ends
+rather than exploring when no log can be reached. DriftClient restricts breaking to logs and leaves
+for these jobs through `allowBreak` and `allowBreakAnyway`. `TreeCutModelTest` covers the choices.
