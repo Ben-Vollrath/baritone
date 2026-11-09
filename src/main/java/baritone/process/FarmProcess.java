@@ -36,6 +36,7 @@ import baritone.pathing.movement.MovementHelper;
 import baritone.utils.BaritoneProcessHelper;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
@@ -101,8 +102,21 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             Blocks.CACTUS.asItem()
     );
 
+    private final CropSweep sweep;
+
     public FarmProcess(Baritone baritone) {
         super(baritone);
+        this.sweep = new CropSweep(baritone, state -> {
+            for (Harvest harvest : Harvest.values()) {
+                if (harvest.block == state.getBlock()) return harvest.readyToHarvest != null && harvest.readyToHarvest.test(state);
+            }
+            return false;
+        });
+    }
+
+    /** Sustained attack while sweeping a field. */
+    public boolean isHoldingAttack() {
+        return active && Baritone.settings().naturalMovement.value && sweep.isHoldingAttack();
     }
 
     @Override
@@ -120,6 +134,7 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         this.range = range;
         active = true;
         locations = null;
+        sweep.reset();
     }
 
     private enum Harvest {
@@ -274,6 +289,16 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         }
 
         baritone.getInputOverrideHandler().clearAllKeys();
+        if (Baritone.settings().naturalMovement.value && !Baritone.settings().replantCrops.value) {
+            if (toBreak.isEmpty() && sweep.harvested()) {
+                onLostControl();
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+            if (isSafeToCancel) {
+                PathingCommand sweeping = sweep.tick(toBreak);
+                if (sweeping != null) return sweeping;
+            }
+        }
         BetterBlockPos playerPos = ctx.playerFeet();
         double blockReachDistance = ctx.playerController().getBlockReachDistance();
         for (BlockPos pos : toBreak) {
@@ -287,6 +312,15 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
                 if (ctx.isLookingAt(pos)) {
                     baritone.getInputOverrideHandler().setInputForceState(Input.CLICK_LEFT, true);
                 }
+                return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
+            }
+        }
+        if (Baritone.settings().naturalMovement.value && isSafeToCancel) {
+            // reachable() traces along the aim motor's next small step, so a crop away from
+            // the current view looks unreachable. Standing in a goal, that would wait forever.
+            Optional<Rotation> nearestView = nearestVisibleCrop(toBreak, playerPos, blockReachDistance);
+            if (nearestView.isPresent()) {
+                baritone.getLookBehavior().updateTarget(nearestView.get(), true);
                 return new PathingCommand(null, PathingCommandType.REQUEST_PAUSE);
             }
         }
@@ -402,9 +436,34 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         return new PathingCommand(new GoalComposite(goalz.toArray(new Goal[0])), PathingCommandType.SET_GOAL_AND_PATH);
     }
 
+    private Optional<Rotation> nearestVisibleCrop(List<BlockPos> crops, BetterBlockPos playerPos, double reach) {
+        Rotation current = ctx.playerRotations();
+        Vec3 eyes = ctx.player().getEyePosition(1.0F);
+        Rotation best = null;
+        double bestAngle = Double.MAX_VALUE;
+        for (BlockPos pos : crops) {
+            if (playerPos.distSqr(pos) > reach * reach) {
+                continue;
+            }
+            Rotation rotation = RotationUtils.calcRotationFromVec3d(eyes, Vec3.atCenterOf(pos), current);
+            double angle = Math.hypot(Mth.wrapDegrees(rotation.getYaw() - current.getYaw()), rotation.getPitch() - current.getPitch());
+            if (angle >= bestAngle) {
+                continue;
+            }
+            HitResult result = RayTraceUtils.rayTraceTowards(ctx.player(), rotation, reach);
+            if (result instanceof BlockHitResult && ((BlockHitResult) result).getBlockPos().equals(pos)) {
+                best = rotation;
+                bestAngle = angle;
+            }
+        }
+        return Optional.ofNullable(best);
+    }
+
     @Override
     public void onLostControl() {
         active = false;
+        sweep.reset();
+        baritone.getInputOverrideHandler().clearAllKeys();
     }
 
     @Override

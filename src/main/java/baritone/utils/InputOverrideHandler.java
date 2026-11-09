@@ -131,7 +131,8 @@ public final class InputOverrideHandler extends Behavior implements IInputOverri
     }
 
     public boolean isHoldingMiningAttack() {
-        return baritone == BaritoneAPI.getProvider().getPrimaryBaritone() && baritone.getMineProcess().isHoldingAttack();
+        return baritone == BaritoneAPI.getProvider().getPrimaryBaritone()
+                && (baritone.getMineProcess().isHoldingAttack() || baritone.getFarmProcess().isHoldingAttack());
     }
 
     public void recordVanillaAttack(boolean held) { vanillaAttackHeld = held; }
