@@ -73,6 +73,8 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
 
     private int range;
     private BlockPos center;
+    /** Only crops this accepts, when set: one patch of a bigger farm. */
+    private Predicate<BlockPos> area;
 
     private static final List<Item> FARMLAND_PLANTABLE = Arrays.asList(
             Items.BEETROOT_SEEDS,
@@ -132,9 +134,16 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
             center = pos;
         }
         this.range = range;
+        area = null;
         active = true;
         locations = null;
         sweep.reset();
+    }
+
+    /** Farms only the crops {@code area} accepts, wherever they are in the scan; done once none of them is ripe. */
+    public void farm(Predicate<BlockPos> area) {
+        farm(0, null);
+        this.area = area;
     }
 
     private enum Harvest {
@@ -250,6 +259,9 @@ public final class FarmProcess extends BaritoneProcessHelper implements IFarmPro
         for (BlockPos pos : locations) {
             //check if the target block is out of range.
             if (range != 0 && pos.distSqr(center) > range * range) {
+                continue;
+            }
+            if (area != null && !area.test(pos)) {
                 continue;
             }
 

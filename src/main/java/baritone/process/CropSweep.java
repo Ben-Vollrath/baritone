@@ -2,6 +2,7 @@
 package baritone.process;
 
 import baritone.Baritone;
+import baritone.api.pathing.goals.GoalBlock;
 import baritone.api.process.PathingCommand;
 import baritone.api.process.PathingCommandType;
 import baritone.api.utils.BetterBlockPos;
@@ -40,7 +41,9 @@ import java.util.function.Predicate;
  * and a pass runs on while crops remain ahead.
  */
 final class CropSweep {
-    private static final int PREDICTION_TICKS = 8, CROP_PREDICTION_TICKS = 4, STUCK_TICKS = 30, FALLBACK_TICKS = 100, PICK_TICKS = 60;
+    private static final int PREDICTION_TICKS = 8, CROP_PREDICTION_TICKS = 4, STUCK_TICKS = 40, FALLBACK_TICKS = 100, PICK_TICKS = 60;
+    /** Less than this far in {@link #STUCK_TICKS}, cutting nothing, is stuck. */
+    private static final double STUCK_DISTANCE = .6;
     private static final double PASS_RADIUS = 4, TURN_PER_TICK = 9, ARRIVAL = 1.7;
     private static final double NORMAL_WALK_SPEED = .1, SPRINT_LIMIT = .18, PICK_STANDOFF = 2;
     private static final int MOP_UP_MIN = 6;
@@ -111,8 +114,26 @@ final class CropSweep {
     PathingCommand tick(List<BlockPos> ripe) {
         int feet = ctx.playerFeet().getY();
         List<BlockPos> crops = new ArrayList<>();
+        BlockPos nearest = null;
+        double nearestDistance = Double.MAX_VALUE;
         for (BlockPos pos : ripe) {
-            if (Math.abs(pos.getY() - feet) <= 1 && !skipped.contains(pos)) crops.add(pos);
+            if (Math.abs(pos.getY() - feet) > 1 || skipped.contains(pos)) continue;
+            double distance = Math.hypot(pos.getX() + .5 - ctx.player().getX(), pos.getZ() + .5 - ctx.player().getZ());
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearest = pos;
+            }
+            if (pos.getY() == feet) crops.add(pos);
+        }
+        if (nearest == null) return null;
+        if (nearest.getY() != feet) {
+            // The field is a step off the player's level. From below (the Hub's farm sits a step above its paths)
+            // its farmland is a wall to the sweep's ground checks; from above, its crops are ground that can't be
+            // stood on. The pathfinder takes the step onto the field's level, then the sweep plans from there.
+            planned = false;
+            stroke = null;
+            stuckTicks = fallbackTicks = 0;
+            return new PathingCommand(new GoalBlock(nearest), PathingCommandType.SET_GOAL_AND_PATH);
         }
         if (crops.isEmpty()) return null;
         if (fallbackTicks > 0) {
@@ -192,14 +213,21 @@ final class CropSweep {
     }
 
     private void trackStuck(double x, double z) {
-        boolean moved = Math.hypot(x - lastX, z - lastZ) > .02;
-        lastX = x;
-        lastZ = z;
+        // Progress is how far the body got since the last check, not whether it moved at all: strafing into a
+        // wall shifts it a little every tick without getting anywhere.
+        boolean moved = Math.hypot(x - lastX, z - lastZ) > STUCK_DISTANCE;
         // Standing still is fine while something is being cut; the crops set the pace.
         boolean cutting = ctx.objectMouseOver() instanceof BlockHitResult block && block.getType() == HitResult.Type.BLOCK
                 && ready.test(ctx.world().getBlockState(block.getBlockPos()));
-        stuckTicks = moved || cutting || startDelay > 0 ? 0 : stuckTicks + 1;
-        if (stuckTicks < STUCK_TICKS) return;
+        if (moved || cutting || startDelay > 0) {
+            lastX = x;
+            lastZ = z;
+            stuckTicks = 0;
+            return;
+        }
+        if (++stuckTicks < STUCK_TICKS) return;
+        lastX = x;
+        lastZ = z;
         // Let the pathfinder walk out, then plan again from wherever that leaves the player.
         stuckTicks = 0;
         fallbackTicks = FALLBACK_TICKS;
