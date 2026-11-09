@@ -85,8 +85,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     private boolean naturalApproaching, naturalWorkingEstablished;
     private BlockPos naturalAcquireOre;
     private int naturalAcquireTick=-1, naturalAcquireTicks;
-    private boolean treeJob;
+    private boolean treeJob, sandJob;
     private final TreeCutter trees;
+    private final SandSweep sand;
 
     public MineProcess(Baritone baritone) {
         super(baritone);
@@ -94,6 +95,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             blacklist.add(pos);
             knownOreLocations.remove(pos);
         });
+        this.sand = new SandSweep(baritone, state -> filter != null && filter.has(state));
     }
 
     @Override
@@ -116,6 +118,10 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         }
         if (calcFailed && treeJob && Baritone.settings().naturalMovement.value) {
             trees.abandonTree();
+            calcFailed = false;
+        }
+        if (calcFailed && sandJob && Baritone.settings().naturalMovement.value) {
+            sand.abandonTarget();
             calcFailed = false;
         }
         if (calcFailed && naturalStance != null) {
@@ -172,6 +178,11 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
             if (collecting == null) cancel();
             return collecting;
         }
+        if (sandJob && Baritone.settings().naturalMovement.value) {
+            PathingCommand mining = sand.tick(isSafeToCancel);
+            if (mining == null) cancel();
+            return mining;
+        }
         if (Baritone.settings().naturalMovement.value) {
             PathingCommand batch = naturalBatchTick(curr, isSafeToCancel);
             if (batch != null) return batch;
@@ -203,19 +214,21 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
 
     public String naturalPhase() {
         if (isActive() && treeJob && Baritone.settings().naturalMovement.value) return trees.phase();
+        if (isActive() && sandJob && Baritone.settings().naturalMovement.value) return "harvest";
         return !isActive() ? "idle" : naturalCollecting ? "collect" : naturalApproaching ? "approach"
                 : naturalTarget != null ? "harvest" : naturalStance != null ? "approach" : "search";
     }
 
     public Optional<Float> naturalViewPitch() { return Optional.ofNullable(naturalViewPitch); }
 
-    public BlockPos naturalMiningTarget() { return treeJob ? trees.target() : naturalTarget!=null ? naturalTarget : naturalApproachOre; }
+    public BlockPos naturalMiningTarget() { return treeJob ? trees.target() : sandJob ? sand.target() : naturalTarget!=null ? naturalTarget : naturalApproachOre; }
     public BlockPos naturalNextOre() { return naturalAdvanceNext; }
-    public int naturalMiningBatchId() { return treeJob ? trees.treesStarted() : naturalBatch==null ? -1 : naturalBatchId; }
+    public int naturalMiningBatchId() { return treeJob ? trees.treesStarted() : sandJob ? sand.bandsStarted() : naturalBatch==null ? -1 : naturalBatchId; }
 
     /** Sustained attack from the first acquired ore until the cluster finishes. */
     public boolean isHoldingAttack() {
         if (treeJob) return isActive() && Baritone.settings().naturalMovement.value && trees.isHoldingAttack();
+        if (sandJob) return isActive() && Baritone.settings().naturalMovement.value && sand.isHoldingAttack();
         return isActive() && Baritone.settings().naturalMovement.value && naturalAttackHeld && naturalTarget != null && !naturalCollecting;
     }
 
@@ -223,6 +236,7 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
     public boolean shouldSneakForPrecision() {
         if (!isActive() || !Baritone.settings().naturalMovement.value || ctx.player()==null || ctx.player().getSpeed()<=.18) return false;
         if (treeJob) return trees.closing();
+        if (sandJob) return false;
         if (naturalAttackHeld || naturalTarget!=null) return true;
         double range=ctx.playerController().getBlockReachDistance()+1;
         return knownOreLocations!=null && knownOreLocations.stream().anyMatch(pos->filter.has(BlockStateInterface.get(ctx,pos))
@@ -996,6 +1010,9 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         this.treeJob=filter != null && !filter.blocks().isEmpty() && filter.blocks().stream()
                 .allMatch(block -> block.getBlock().defaultBlockState().is(net.minecraft.tags.BlockTags.LOGS));
         this.trees.reset();
+        this.sandJob=filter != null && !filter.blocks().isEmpty() && filter.blocks().stream()
+                .allMatch(block -> block.getBlock() == net.minecraft.world.level.block.Blocks.SAND || block.getBlock() == net.minecraft.world.level.block.Blocks.RED_SAND);
+        this.sand.reset();
         if (filter != null) {
             rescan(new ArrayList<>(), new CalculationContext(baritone));
         }
