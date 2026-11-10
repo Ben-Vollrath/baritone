@@ -32,26 +32,17 @@ public class NaturalAimTest {
         assertFalse(interaction.unwrapped());
     }
 
-    @Test public void movingHeadingsVaryCoherentlyAndTightGroundUsesExactHeading() {
-        var shapes=new HashSet<String>();
+    @Test public void movingHeadingsHoldExactlyLikeRecordedPlayers() {
+        // Recorded players hold the mouse still between flicks; walking adds no drift of its own.
         for (long seed=1;seed<=30;seed++) {
             NaturalAim.State state=null;
-            var shape=new StringBuilder();
-            double previous=0;
             for (int tick=0;tick<100;tick++) {
                 var proposal=NaturalAim.propose(state,0,0,seed,false,true,true);
-                assertTrue(Math.abs(proposal.yaw())<=2.001);
-                assertTrue(Math.abs(proposal.yaw()-previous)<1);
-                shape.append(Math.round(proposal.yaw()*100)).append(',');
-                previous=proposal.yaw();
+                assertEquals(0,proposal.yaw(),1e-9);
                 state=proposal.state();
             }
-            shapes.add(shape.toString());
             assertEquals(0,NaturalAim.propose(state,0,0,seed,false,true,false).yaw(),0);
-            var rest=NaturalAim.propose(state,0,0,seed,false,false,true);
-            assertEquals(previous,rest.yaw(),1e-8);
         }
-        assertEquals(30,shapes.size());
     }
 
     @Test public void malformedCalibrationDoesNotReplaceWorkingProfiles() {

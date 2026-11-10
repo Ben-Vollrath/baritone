@@ -265,6 +265,10 @@ public class MovementDescend extends Movement {
             } else {
                 MovementHelper.moveTowards(ctx, state, dest);
             }
+        } else if (Baritone.settings().naturalMovement.value) {
+            // Over the destination but not landed yet: people keep running instead of letting go of W mid-air
+            // (which also ends the sprint). Only reached when overshooting isn't dangerous (not safe mode).
+            MovementHelper.moveTowards(ctx, state, fakeDest);
         }
         return state;
     }

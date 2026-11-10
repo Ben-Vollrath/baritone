@@ -77,6 +77,8 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
     public void updateTarget(Rotation rotation, boolean blockInteract) {
         this.target = new Target(rotation, Target.Mode.resolve(ctx, blockInteract), blockInteract);
         this.processor.precise = blockInteract;
+        // the walking camera (NaturalMovementBehavior.cameraYaw) already shaped this tick's yaw as a hand would
+        this.processor.exact = !blockInteract && baritone.getNaturalMovementBehavior().scriptedCameraThisTick();
         this.processor.moving = baritone.getPathingBehavior().isPathing();
         if (ctx.player().onGround() || blockInteract) this.processor.openSpace = hasGazeSpace(rotation.getYaw());
         this.requestedRotation = rotation;
@@ -339,7 +341,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
         private NaturalSteering.Parameters motor;
         private double motorBaseSpeed, motorBaseAcceleration;
         private NaturalAim.State aim, pendingAim;
-        protected boolean precise, moving, openSpace;
+        protected boolean precise, moving, openSpace, exact;
 
         public AbstractAimProcessor(IPlayerContext ctx) {
             this.ctx = ctx;
@@ -369,6 +371,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.precise = source.precise;
             this.moving = source.moving;
             this.openSpace = source.openSpace;
+            this.exact = source.exact;
         }
 
         final NaturalAim.Proposal aimProposal(Rotation rotation) {
@@ -399,6 +402,9 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
                             yawAcceleration, stiffness, damping, response.speedLimit(), response.accelerationLimit());
                     pitchStep = NaturalSteering.step(Rotation.clampPitch(desiredPitch) - prev.getPitch(), pitchVelocity,
                             pitchAcceleration, stiffness, damping, response.speedLimit(), response.accelerationLimit());
+                }
+                if (exact && Baritone.settings().naturalMovement.value) {
+                    yawStep = SmoothRotation.wrapDegrees(rotation.getYaw() - prev.getYaw());
                 }
                 // Finish within half a mouse count instead of stalling in the proportional arrival zone.
                 double mouseCount = mouseToAngle(1);
@@ -498,7 +504,7 @@ public final class LookBehavior extends Behavior implements ILookBehavior {
             this.yawAcceleration = this.pitchAcceleration = this.pendingYawAcceleration = this.pendingPitchAcceleration = 0;
             this.motor = null;
             this.aim = this.pendingAim = null;
-            this.precise = this.moving = this.openSpace = false;
+            this.precise = this.moving = this.openSpace = this.exact = false;
             this.onReset();
         }
 

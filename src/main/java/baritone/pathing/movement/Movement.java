@@ -183,15 +183,7 @@ public abstract class Movement implements IMovement, MovementHelper {
                 .max(Comparator.comparingDouble(option -> (option.motionX() * wantX + option.motionZ() * wantZ)
                         / Math.hypot(option.motionX(), option.motionZ()))).orElseThrow();
         double length = Math.hypot(selection.motionX(), selection.motionZ());
-        double dx = -selection.motionX() / length * .38, dz = selection.motionZ() / length * .38;
-        var box = ctx.player().getBoundingBox().expandTowards(dx, 0, dz);
-        if (!ctx.world().noCollision(ctx.player(), box)) return false;
-        int floor = ctx.playerFeet().getY() - 1;
-        for (double x : new double[]{box.minX, box.maxX}) for (double z : new double[]{box.minZ, box.maxZ}) {
-            var pos = new BlockPos((int) Math.floor(x), floor, (int) Math.floor(z));
-            var state = ctx.world().getBlockState(pos);
-            if (!state.isFaceSturdy(ctx.world(), pos, Direction.UP) || MovementHelper.avoidWalkingInto(state)) return false;
-        }
+        if (!MovementHelper.naturalStepClear(ctx, -selection.motionX() / length, selection.motionZ() / length)) return false;
         for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT})
             currentState.setInput(input, false);
         selection.setInputs(currentState);

@@ -252,7 +252,15 @@ public class MovementTraverse extends Movement {
             logDebug("Wrong Y coordinate");
             if (feet.getY() < dest.getY()) {
                 System.out.println("In movement traverse");
+                if (Baritone.settings().naturalMovement.value) {
+                    // in a dip beside the path: jump back up onto it instead of hopping in place
+                    MovementHelper.moveTowards(ctx, state, dest);
+                }
                 return state.setInput(Input.JUMP, true);
+            }
+            if (Baritone.settings().naturalMovement.value && ctx.player().onGround() && feet.getY() == dest.getY() + 1) {
+                // standing on a block beside the path (cut a corner onto it): step back down onto the path
+                MovementHelper.moveTowards(ctx, state, dest);
             }
             return state;
         }

@@ -29,6 +29,11 @@ public final class NaturalMovementBehavior extends Behavior {
     private int nextGaze;
     private int lookahead;
     private double steeringX, steeringZ;
+    private boolean flicking;
+    private double flickStart, flickEnd, holdYaw;
+    private int flickTick, flickDuration, scriptedTick = Integer.MIN_VALUE;
+    private ForkableRandom flickRandom = new ForkableRandom(0);
+    private int sideKey; // -1 A, 0 none, 1 D
 
     public NaturalMovementBehavior(Baritone baritone) { super(baritone); }
 
@@ -41,6 +46,64 @@ public final class NaturalMovementBehavior extends Behavior {
         decision = "idle";
         walkingPitch = 5;
         lookahead = 0;
+        flicking = false;
+        sideKey = 0;
+    }
+
+    /**
+     * Where the camera should point this tick while walking towards {@code wanted}. Recorded players hold the mouse
+     * dead still and correct in short flicks (about 1.4 a second, median ~10 degrees in ~6 ticks, 40 degrees in ~14):
+     * once the heading is off by a few degrees (varies per job), sweep a smooth minimum-jerk stroke to a spot near it,
+     * a little short or long like a hand, then hold exactly there. LookBehavior applies these yaws as they are.
+     */
+    public float cameraYaw(float actual, float wanted) {
+        int tick = ctx.player().tickCount;
+        if (scriptedTick != tick - 1 && scriptedTick != tick) { // resume after other steps moved the camera
+            flicking = false;
+            holdYaw = actual;
+        }
+        scriptedTick = tick;
+        if (flicking) {
+            flickTick++;
+            if (flickTick < flickDuration) {
+                double t = flickTick / (double) flickDuration;
+                return (float) (flickStart + (flickEnd - flickStart) * t * t * t * (10 - 15 * t + 6 * t * t));
+            }
+            flicking = false;
+            holdYaw = flickEnd;
+        }
+        double error = net.minecraft.util.Mth.wrapDegrees(wanted - holdYaw);
+        double band = 4 + 4 * jobFraction(0x5ca11L);
+        if (Math.abs(error) > band) {
+            flickStart = holdYaw;
+            flickEnd = holdYaw + error * (.85 + .3 * flickRandom.nextDouble());
+            double amplitude = Math.abs(flickEnd - flickStart);
+            flickDuration = (int) Math.round(Math.min(20, (3.5 + .25 * amplitude) * (.8 + .4 * flickRandom.nextDouble())));
+            flickDuration = Math.max(3, flickDuration);
+            flicking = true;
+            flickTick = 0;
+            return cameraYaw(actual, wanted);
+        }
+        return (float) holdYaw;
+    }
+
+    /** Whether {@link #cameraYaw} produced the walking camera's yaw this tick (applied exactly, without the motor). */
+    public boolean scriptedCameraThisTick() {
+        return ctx.player() != null && scriptedTick == ctx.player().tickCount;
+    }
+
+    /** A/D while the camera holds: -1 left, 1 right, 0 neither. Pressed past a small error, released once it's gone. */
+    public int sideKey(float actual, float wanted) {
+        double error = net.minecraft.util.Mth.wrapDegrees(wanted - actual); // > 0: wanted is to the right
+        double press = 2.5 + 2.5 * jobFraction(0x51deL);
+        if (flicking) sideKey = 0;
+        else if (sideKey != 0 && (Math.abs(error) < 1.5 || Math.signum(error) != sideKey)) sideKey = 0;
+        else if (sideKey == 0 && Math.abs(error) > press) sideKey = error > 0 ? 1 : -1;
+        return sideKey;
+    }
+
+    private double jobFraction(long salt) {
+        return new ForkableRandom(Baritone.settings().naturalMovementSeed.value ^ salt).nextDouble();
     }
 
     public int elapsedTicks() { return ctx.player() == null ? 0 : ctx.player().tickCount - startedAt; }
@@ -105,6 +168,7 @@ public final class NaturalMovementBehavior extends Behavior {
             seed = Baritone.settings().naturalMovementSeed.value;
             random = new ForkableRandom(seed ^ 0x52ca89e7L);
             gazeRandom = new ForkableRandom(seed ^ 0x789e38abL);
+            flickRandom = new ForkableRandom(seed ^ 0x3f1c4b2dL);
             walkingPitch = NaturalAim.walkingPitch(seed);
             nextGaze = player.tickCount + 55 + (int) (gazeRandom.nextDouble() * 90);
             nextJump = player.tickCount + 5 + (int) (random.nextDouble() * 8);
@@ -143,43 +207,37 @@ public final class NaturalMovementBehavior extends Behavior {
         var current = movements.get(index);
         if (!(current instanceof MovementTraverse || current instanceof MovementDiagonal)
                 || !MovementHelper.naturalLookaheadSafe(ctx, current)) return;
-        var direction = current.getDirection();
-        if (direction.getY() != 0) return;
-        // Count distance rather than nodes: a diagonal step is sqrt(2) blocks.
-        int runwaySteps = (int) Math.ceil(7 / Math.hypot(direction.getX(), direction.getZ()));
-        if (index + runwaySteps > movements.size()) return;
-        float desiredYaw = (float) Math.toDegrees(Math.atan2(-direction.getX(), direction.getZ()));
-        decision = "turning";
-        if (Math.abs(Rotation.normalizeYaw(desiredYaw - player.getYRot())) > 6) return;
+        if (current.getDirection().getY() != 0) return;
         int ground = current.getSrc().y;
-        double length = Math.hypot(direction.getX(), direction.getZ());
-        double sideX = -direction.getZ() / length, sideZ = direction.getX() / length;
-        double lateral = (player.getX() - current.getSrc().x - .5) * sideX
-                + (player.getZ() - current.getSrc().z - .5) * sideZ;
-        double yaw = Math.toRadians(player.getYRot());
-        double sideVelocity = player.getDeltaMovement().x * sideX + player.getDeltaMovement().z * sideZ
-                + .2 * (-Math.sin(yaw) * sideX + Math.cos(yaw) * sideZ);
-        double landingLateral = lateral + sideVelocity * 12;
-        decision = "runway obstacle, turn or edge";
-        for (int i = index; i < index + runwaySteps; i++) {
+        // The path keeps going flat for a few blocks (straight and diagonal steps mixed, like a road at an angle) ...
+        java.util.Set<Long> cells = new java.util.HashSet<>();
+        double covered = 0;
+        for (int i = index; covered < 5; i++) {
+            if (i >= movements.size()) return;
             var next = movements.get(i);
             if (!(next instanceof MovementTraverse || next instanceof MovementDiagonal)
-                    || !MovementHelper.naturalLookaheadSafe(ctx, next)
-                    || !next.getDirection().equals(direction) || next.getDest().y != ground) return;
-            // Keep a broad supported floor, but check air against the swept body.
-            // A wall beside a supported path need not occupy the player's flight.
-            for (int side = -1; side <= 1; side++) {
-                int ox = -direction.getZ() * side, oz = direction.getX() * side;
-                if (!hopFloorSupported(next.getSrc().offset(ox, 0, oz)) || !hopFloorSupported(next.getDest().offset(ox, 0, oz))) return;
-                if (next instanceof MovementDiagonal) {
-                    // Check support between diagonal nodes, including both corners
-                    // rather than only the diagonal centers.
-                    if (!hopFloorSupported(new BlockPos(next.getSrc().x + ox, ground, next.getDest().z + oz))
-                            || !hopFloorSupported(new BlockPos(next.getDest().x + ox, ground, next.getSrc().z + oz))) return;
-                }
-            }
-            if (!hopBodyClear(next.getSrc(), next.getDest(), sideX, sideZ, lateral, landingLateral)) return;
+                    || !MovementHelper.naturalLookaheadSafe(ctx, next) || next.getDest().y != ground) return;
+            cells.add(MovementHelper.columnKey(next.getSrc()));
+            cells.add(MovementHelper.columnKey(next.getDest()));
+            covered += Math.hypot(next.getDirection().getX(), next.getDirection().getZ());
         }
+        // ... and the flight stays over it: along the facing (the jump boost goes that way) and the motion,
+        // about one sprint jump (12 ticks) far, with solid floor below and room for the head at the top of the arc.
+        decision = "runway obstacle, turn or edge";
+        var feet = player.position();
+        double yaw = Math.toRadians(player.getYRot());
+        var motion = player.getDeltaMovement();
+        double speed = Math.hypot(motion.x, motion.z);
+        double[][] lines = {{-Math.sin(yaw), Math.cos(yaw)}, {motion.x / speed, motion.z / speed}};
+        for (double[] line : lines) {
+            if (!MovementHelper.naturalLineOnPath(ctx, feet, feet.x + line[0] * 4.5, feet.z + line[1] * 4.5, ground, cells, 2)) return;
+            for (double d = .5; d <= 4.5; d += .5) {
+                if (!hopFloorSupported(BlockPos.containing(feet.x + line[0] * d, ground, feet.z + line[1] * d))) return;
+            }
+        }
+        decision = "turning";
+        double cos = lines[0][0] * lines[1][0] + lines[0][1] * lines[1][1];
+        if (Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, cos)))) > 35) return;
         floorY = ground;
         hopStarted = player.tickCount;
         hopping = true;
@@ -194,20 +252,6 @@ public final class NaturalMovementBehavior extends Behavior {
         if (!floor.isFaceSturdy(ctx.world(), pos.below(), Direction.UP) || MovementHelper.avoidWalkingInto(floor)
                 || floor.is(Blocks.ICE) || floor.is(Blocks.PACKED_ICE) || floor.is(Blocks.BLUE_ICE)
                 || floor.is(Blocks.HONEY_BLOCK) || floor.is(Blocks.SLIME_BLOCK)) return false;
-        return true;
-    }
-
-    private boolean hopBodyClear(BlockPos from, BlockPos to, double sideX, double sideZ,
-                                 double lateral, double landingLateral) {
-        double margin = ctx.player().getBbWidth() / 2 + .15;
-        double minX = Math.min(from.getX(), to.getX()) + .5 + Math.min(sideX * lateral, sideX * landingLateral) - margin;
-        double maxX = Math.max(from.getX(), to.getX()) + .5 + Math.max(sideX * lateral, sideX * landingLateral) + margin;
-        double minZ = Math.min(from.getZ(), to.getZ()) + .5 + Math.min(sideZ * lateral, sideZ * landingLateral) - margin;
-        double maxZ = Math.max(from.getZ(), to.getZ()) + .5 + Math.max(sideZ * lateral, sideZ * landingLateral) + margin;
-        for (int x = (int) Math.floor(minX); x <= (int) Math.floor(maxX); x++)
-            for (int z = (int) Math.floor(minZ); z <= (int) Math.floor(maxZ); z++)
-                for (int y = from.getY(); y <= from.getY() + 3; y++)
-                    if (!MovementHelper.fullyPassable(ctx, new BlockPos(x, y, z))) return false;
         return true;
     }
 

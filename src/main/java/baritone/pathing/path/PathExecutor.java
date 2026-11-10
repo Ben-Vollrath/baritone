@@ -110,6 +110,21 @@ public class PathExecutor implements IPathExecutor, Helper {
                     return false;
                 }
             }
+            // Natural steering cuts across flat steps, so the feet can land on the next step or the one after
+            // without touching the current destination. Plain walking steps have nothing left to finish.
+            if (Baritone.settings().naturalMovement.value) {
+                for (int i = pathPosition + 1; i <= pathPosition + 2 && i < path.length() - 1; i++) {
+                    IMovement skipped = path.movements().get(i - 1);
+                    if (!(skipped instanceof MovementTraverse || skipped instanceof MovementDiagonal)
+                            || skipped.getDirection().getY() != 0) break;
+                    if (((Movement) path.movements().get(i)).getValidPositions().contains(whereAmI)) {
+                        pathPosition = i;
+                        onChangeInPathPosition();
+                        onTick();
+                        return false;
+                    }
+                }
+            }
             for (int i = pathPosition + 3; i < path.length() - 1; i++) { //dont check pathPosition+1. the movement tells us when it's done (e.g. sneak placing)
                 // also don't check pathPosition+2 because reasons
                 if (((Movement) path.movements().get(i)).getValidPositions().contains(whereAmI)) {

@@ -116,8 +116,6 @@ public final class NaturalAim {
                 reference=goal+Math.max(-2.5,Math.min(2.5,reference-goal));
                 turning=false;
             }
-        } else if (!precise && moving && openSpace) {
-            reference=goal+gaze(seed,state.tick);
         } else if (!precise && !moving && previous!=null && !previous.turning) {
             // Arrival ends the hand stroke where it was aimed; no extra exact
             // centering movement after the body stops.
@@ -126,24 +124,6 @@ public final class NaturalAim {
         var next=new State(state.tick+1,state.origin,state.angle,goal,state.style,turning,
                 turning ? 0 : SmoothRotation.wrapDegrees(reference-goal));
         return new Proposal(next,reference,ready,turning);
-    }
-
-    /** Coherent, irregular held glances. No per-frame independent random noise. */
-    private static double gaze(long seed,int tick) {
-        var random=new ForkableRandom(seed ^ 0x4f8a9c72b15e063dL);
-        int start=0;
-        double from=0;
-        for (int i=0;i<10000;i++) {
-            int duration=10+(int)(random.nextDouble()*26);
-            double to=(random.nextDouble()-.5)*4;
-            if (tick<start+duration) {
-                double t=Math.max(0,Math.min(1,(tick-start)/(double)Math.min(8,duration)));
-                t=t*t*(3-2*t);
-                return mix(from,to,t);
-            }
-            start+=duration; from=to;
-        }
-        return from;
     }
 
     private static double mix(double a,double b,double t) { return a+(b-a)*t; }

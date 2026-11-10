@@ -669,6 +669,7 @@ public interface MovementHelper extends ActionCosts, Helper {
     static void moveTowards(IPlayerContext ctx, MovementState state, BlockPos pos) {
         Baritone naturalOwner = null;
         int lookahead = 0;
+        boolean farAim = false;
         boolean naturalWalking = Baritone.settings().naturalMovement.value && state.getStatus() == baritone.api.pathing.movement.MovementStatus.RUNNING;
         if (naturalWalking) {
             var active = baritone.api.BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
@@ -677,21 +678,56 @@ public interface MovementHelper extends ActionCosts, Helper {
             if (executor != null) {
                 var movements = executor.getPath().movements();
                 int index = executor.getPosition();
-                if (index >= 0 && index < movements.size() && naturalLookaheadSafe(ctx, movements.get(index))
+                // Pressing into something: aim at the step itself until free (the line ahead scraped a wall).
+                boolean blocked = ctx.player().horizontalCollision;
+                if (!blocked && index >= 0 && index < movements.size() && naturalLookaheadSafe(ctx, movements.get(index))
                         && pos.getX() == movements.get(index).getDest().getX() && pos.getZ() == movements.get(index).getDest().getZ()) {
                     // Traverse asks to aim at the head block. Navigation nodes describe
                     // the floor, so normalize height before extending the steering target.
                     pos = movements.get(index).getDest();
-                    var direction = movements.get(index).getDirection();
-                    // Follow the runway ahead instead of correcting toward every block center.
-                    for (int i = index + 1; i < movements.size() && i <= index + 7; i++) {
+                    // Look at the farthest point of the path ahead that a straight line reaches without leaving it,
+                    // like a person running along a road, instead of correcting toward every block center
+                    // (a road at an angle alternates straight and diagonal steps).
+                    var feet = ctx.player().position();
+                    java.util.Set<Long> cells = new java.util.HashSet<>();
+                    cells.add(columnKey(movements.get(index).getSrc()));
+                    cells.add(columnKey(pos));
+                    BlockPos best = pos;
+                    for (int i = index + 1; i < movements.size() && i <= index + 10; i++) {
                         var next = movements.get(i);
-                        if (!naturalLookaheadSafe(ctx, next)
-                                || !direction.equals(next.getDirection()) || next.getDest().getY() != pos.getY()
+                        if (!naturalLookaheadSafe(ctx, next) || next.getDest().getY() != pos.getY()
                                 || !fullyPassable(ctx, next.getDest()) || !fullyPassable(ctx, next.getDest().above())
                                 || !canWalkOn(ctx, next.getDest().below())) break;
-                        pos = next.getDest();
+                        BlockPos candidate = next.getDest();
+                        cells.add(columnKey(candidate));
+                        if (Math.hypot(candidate.getX() + .5 - feet.x, candidate.getZ() + .5 - feet.z) > 7.5) break;
+                        if (!naturalLineOnPath(ctx, feet, candidate.getX() + .5, candidate.getZ() + .5, candidate.getY(), cells, 1)) break;
+                        best = candidate;
                         lookahead++;
+                    }
+                    pos = best;
+                }
+                if (lookahead == 0 && !blocked && index >= 0 && index < movements.size()
+                        && !(movements.get(index) instanceof baritone.pathing.movement.movements.MovementAscend)) { // an ascend jumps at its own step
+                    // Steps, slopes and the last block before them: look a couple of blocks along the path (any
+                    // height) rather than at the next block center, which swings the view as it comes close.
+                    var feet = ctx.player().position();
+                    java.util.Set<Long> columns = new java.util.HashSet<>();
+                    columns.add(columnKey(movements.get(index).getSrc()));
+                    for (int i = index; i < movements.size() && i <= index + 6; i++) {
+                        var step = movements.get(i);
+                        if (!(step instanceof baritone.pathing.movement.movements.MovementTraverse
+                                || step instanceof baritone.pathing.movement.movements.MovementDiagonal
+                                || step instanceof baritone.pathing.movement.movements.MovementAscend
+                                || step instanceof baritone.pathing.movement.movements.MovementDescend)) break;
+                        BlockPos node = step.getDest();
+                        columns.add(columnKey(node));
+                        if (Math.hypot(node.getX() + .5 - feet.x, node.getZ() + .5 - feet.z) < 2.5) continue;
+                        if (naturalColumnsOnPath(feet, node.getX() + .5, node.getZ() + .5, columns)) {
+                            pos = node;
+                            farAim = true;
+                        }
+                        break;
                     }
                 }
             }
@@ -705,12 +741,84 @@ public interface MovementHelper extends ActionCosts, Helper {
             point = point.add(dx, 0, dz);
         }
         if (naturalOwner != null) naturalOwner.getNaturalMovementBehavior().observeSteering(lookahead, point.x, point.z);
-        state.setTarget(new MovementTarget(
-                RotationUtils.calcRotationFromVec3d(ctx.playerHead(),
-                        point,
-                        ctx.playerRotations()).withPitch(naturalWalking ? naturalWalkingPitch(ctx) : ctx.playerRotations().getPitch()),
-                false
-        )).setInput(Input.MOVE_FORWARD, true);
+        Rotation rotation = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), point, ctx.playerRotations())
+                .withPitch(naturalWalking ? naturalWalkingPitch(ctx) : ctx.playerRotations().getPitch());
+        if (naturalOwner != null && lookahead > 0) {
+            // Hold the camera while the path is roughly ahead; A/D takes out the difference (on the ground,
+            // where the next footprint can be checked; in the air the camera keeps its strokes).
+            var natural = naturalOwner.getNaturalMovementBehavior();
+            float actual = ctx.playerRotations().getYaw(), wanted = rotation.getYaw();
+            int side = ctx.player().onGround() ? natural.sideKey(actual, wanted) : 0;
+            rotation = new Rotation(natural.cameraYaw(actual, wanted), rotation.getPitch());
+            state.setTarget(new MovementTarget(rotation, false)).setInput(Input.MOVE_FORWARD, true);
+            if (side != 0) {
+                double yaw = Math.toRadians(actual + 45 * side);
+                if (naturalStepClear(ctx, -Math.sin(yaw), Math.cos(yaw))) {
+                    state.setInput(side > 0 ? Input.MOVE_RIGHT : Input.MOVE_LEFT, true);
+                }
+            }
+            return;
+        }
+        state.setTarget(new MovementTarget(rotation, false)).setInput(Input.MOVE_FORWARD, true);
+    }
+
+    /** Like {@link #naturalLineOnPath} but only the columns: for lines across steps, where the floor height changes. */
+    private static boolean naturalColumnsOnPath(net.minecraft.world.phys.Vec3 feet, double tx, double tz, java.util.Set<Long> cells) {
+        double length = Math.hypot(tx - feet.x, tz - feet.z);
+        int steps = Math.max(1, (int) Math.ceil(length / .2));
+        for (int k = 1; k <= steps; k++) {
+            double x = feet.x + (tx - feet.x) * k / steps, z = feet.z + (tz - feet.z) * k / steps;
+            boolean onPath = false;
+            for (double ox : new double[]{0, -.3, .3}) for (double oz : new double[]{0, -.3, .3}) {
+                if (cells.contains(BlockPos.asLong((int) Math.floor(x + ox), 0, (int) Math.floor(z + oz)))) onPath = true;
+            }
+            if (!onPath) return false;
+        }
+        return true;
+    }
+
+    static long columnKey(BlockPos pos) {
+        return BlockPos.asLong(pos.getX(), 0, pos.getZ());
+    }
+
+    /**
+     * The straight line from {@code feet} to (tx, tz) stays on path columns ({@link #columnKey}, a body's width of
+     * slack), over walkable floor at height y, with {@code headroom} free blocks above the feet block.
+     */
+    static boolean naturalLineOnPath(IPlayerContext ctx, net.minecraft.world.phys.Vec3 feet, double tx, double tz, int y,
+                                     java.util.Set<Long> cells, int headroom) {
+        double length = Math.hypot(tx - feet.x, tz - feet.z);
+        int steps = Math.max(1, (int) Math.ceil(length / .2));
+        for (int k = 1; k <= steps; k++) {
+            double x = feet.x + (tx - feet.x) * k / steps, z = feet.z + (tz - feet.z) * k / steps;
+            boolean onPath = false;
+            for (double ox : new double[]{0, -.3, .3}) for (double oz : new double[]{0, -.3, .3}) {
+                if (cells.contains(BlockPos.asLong((int) Math.floor(x + ox), 0, (int) Math.floor(z + oz)))) onPath = true;
+            }
+            if (!onPath) return false;
+            BlockPos cell = new BlockPos((int) Math.floor(x), y, (int) Math.floor(z));
+            if (!canWalkOn(ctx, cell.below())) return false;
+            // the whole body, not just its center line: a line that hugs a wall scrapes it
+            for (double ox : new double[]{-.3, .3}) for (double oz : new double[]{-.3, .3}) {
+                BlockPos corner = new BlockPos((int) Math.floor(x + ox), y, (int) Math.floor(z + oz));
+                for (int h = 0; h <= headroom; h++) if (!fullyPassable(ctx, corner.above(h))) return false;
+            }
+        }
+        return true;
+    }
+
+    /** The next footprint in this direction (unit vector, world x/z) is free and has a floor to stand on. */
+    static boolean naturalStepClear(IPlayerContext ctx, double dirX, double dirZ) {
+        double dx = dirX * .38, dz = dirZ * .38;
+        var box = ctx.player().getBoundingBox().expandTowards(dx, 0, dz);
+        if (!ctx.world().noCollision(ctx.player(), box)) return false;
+        int floor = ctx.playerFeet().getY() - 1;
+        for (double x : new double[]{box.minX, box.maxX}) for (double z : new double[]{box.minZ, box.maxZ}) {
+            var pos = new BlockPos((int) Math.floor(x), floor, (int) Math.floor(z));
+            var below = ctx.world().getBlockState(pos);
+            if (!below.isFaceSturdy(ctx.world(), pos, Direction.UP) || avoidWalkingInto(below)) return false;
+        }
+        return true;
     }
 
     static boolean naturalLookaheadSafe(IPlayerContext ctx, baritone.api.pathing.movement.IMovement movement) {

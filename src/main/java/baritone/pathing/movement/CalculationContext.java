@@ -155,7 +155,10 @@ public class CalculationContext {
                 }
             }
         }
-        this.waterWalkSpeed = ActionCosts.WALK_ONE_IN_WATER_COST * (1 - waterSpeedMultiplier) + ActionCosts.WALK_ONE_BLOCK_COST * waterSpeedMultiplier;
+        // Swimming measured 1-2 blocks/s (10-20 ticks a block); the vanilla estimate is 9. Natural routes go around
+        // water the way people do instead of swimming the long way across it.
+        this.waterWalkSpeed = (ActionCosts.WALK_ONE_IN_WATER_COST * (1 - waterSpeedMultiplier) + ActionCosts.WALK_ONE_BLOCK_COST * waterSpeedMultiplier)
+                * (Baritone.settings().naturalMovement.value ? 2 : 1);
         this.breakBlockAdditionalCost = Baritone.settings().blockBreakAdditionalPenalty.value;
         this.backtrackCostFavoringCoefficient = Baritone.settings().backtrackCostFavoringCoefficient.value;
         this.jumpPenalty = Baritone.settings().jumpPenalty.value;
