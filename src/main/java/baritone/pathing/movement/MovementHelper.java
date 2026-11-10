@@ -160,6 +160,9 @@ public interface MovementHelper extends ActionCosts, Helper {
             if (block == Blocks.IRON_DOOR) {
                 return NO;
             }
+            if (!Baritone.settings().allowOpenDoors.value) {
+                return MAYBE; // canWalkThroughPosition: isPathfindable(LAND), which for doors and gates is "is open"
+            }
             return YES;
         }
         if (block instanceof CarpetBlock) {

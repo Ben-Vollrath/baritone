@@ -362,6 +362,12 @@ public final class Settings {
     public final Setting<Boolean> allowParkour = new Setting<>(false);
 
     /**
+     * Right-click closed doors and fence gates to walk through them. Off for servers where they can't be opened
+     * (Hypixel): then closed ones block the path like a wall and only open ones are walked through.
+     */
+    public final Setting<Boolean> allowOpenDoors = new Setting<>(true);
+
+    /**
      * Actually pretty reliable.
      * <p>
      * Doesn't make it any more dangerous compared to just normal allowParkour th
