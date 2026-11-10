@@ -494,7 +494,16 @@ public class PathExecutor implements IPathExecutor, Helper {
                     return true;
                 }
                 clearKeys();
-                behavior.baritone.getLookBehavior().updateTarget(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), data.first(), ctx.playerRotations()), false);
+                Rotation toLanding = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), data.first(), ctx.playerRotations());
+                if (Baritone.settings().naturalMovement.value) {
+                    // Running off a drop onto a straight run: look where the run goes, at eye level. Aiming at the
+                    // landing point stares down at the floor and swings round as the body passes over it, so hold the
+                    // view once it is close.
+                    double toX = data.first().x - ctx.player().position().x, toZ = data.first().z - ctx.player().position().z;
+                    float yaw = Math.hypot(toX, toZ) > 1 ? toLanding.getYaw() : ctx.playerRotations().getYaw();
+                    toLanding = new Rotation(yaw, MovementHelper.naturalWalkingPitch(ctx));
+                }
+                behavior.baritone.getLookBehavior().updateTarget(toLanding, false);
                 behavior.baritone.getInputOverrideHandler().setInputForceState(Input.MOVE_FORWARD, true);
                 return true;
             }

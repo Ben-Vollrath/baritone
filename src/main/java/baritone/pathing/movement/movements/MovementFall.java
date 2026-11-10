@@ -28,6 +28,7 @@ import baritone.api.utils.input.Input;
 import baritone.pathing.movement.CalculationContext;
 import baritone.pathing.movement.Movement;
 import baritone.pathing.movement.MovementHelper;
+import baritone.pathing.movement.MovementOption;
 import baritone.pathing.movement.MovementState;
 import baritone.pathing.movement.MovementState.MovementTarget;
 import baritone.utils.pathing.MutableMoveResult;
@@ -143,18 +144,24 @@ public class MovementFall extends Movement {
         Vec3 destCenter = VecUtils.getBlockPosCenter(dest); // we are moving to the 0.5 center not the edge (like if we were falling on a ladder)
         if (Baritone.settings().naturalMovement.value && targetRotation == null && avoid() == null
                 && (dest.getX() != src.getX() || dest.getZ() != src.getZ())) {
-            // Dropping down a few blocks, people keep looking the way they are going. Aiming at the landing block's
-            // center (nudged back towards the start) swings the view round by up to 180 degrees once the body drifts
-            // past it, and stares at the feet. Look along the drop instead and let go of W past the center; the drift
-            // that is left still lands on the same block.
-            double dx = dest.getX() - src.getX(), dz = dest.getZ() - src.getZ(), len = Math.hypot(dx, dz);
-            double past = ((ctx.player().position().x - destCenter.x) * dx + (ctx.player().position().z - destCenter.z) * dz) / len;
-            float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
-            // already looking roughly that way (running off the edge): leave the view where it is
+            // Dropping down a few blocks, people look where they go next, at eye level, and step off the edge with
+            // whatever key gets them there (often sideways). Aiming at the landing block's center (nudged back towards
+            // the start) stares at the feet, and a landing beside the wall turns the view towards the drop and then
+            // all the way back to where the path goes on, up to 180 degrees.
+            var feet = ctx.player().position();
+            double toX = destCenter.x - feet.x, toZ = destCenter.z - feet.z;
             float current = ctx.playerRotations().getYaw();
-            boolean roughly = Math.abs(Rotation.normalizeYaw(yaw - current)) < 25;
-            state.setTarget(new MovementTarget(new Rotation(roughly ? current : yaw, MovementHelper.naturalWalkingPitch(ctx)), false));
-            state.setInput(Input.MOVE_FORWARD, past < -.15 && (roughly || Math.abs(Rotation.normalizeYaw(yaw - current)) < 30));
+            float yaw = naturalHeadingAfterFall(current);
+            state.setTarget(new MovementTarget(new Rotation(yaw, MovementHelper.naturalWalkingPitch(ctx)), false));
+            if (Math.hypot(toX, toZ) > .25) {
+                // the key combination (relative to where the camera looks now) closest to the landing block
+                float camX = (float) Math.sin(Math.toRadians(current)), camZ = (float) Math.cos(Math.toRadians(current));
+                double len = Math.hypot(toX, toZ), wantX = -toX / len, wantZ = toZ / len; // MovementOption's convention
+                MovementOption.getOptions(camX, camZ, false)
+                        .max(java.util.Comparator.comparingDouble(o -> (o.motionX() * wantX + o.motionZ() * wantZ)
+                                / Math.hypot(o.motionX(), o.motionZ())))
+                        .ifPresent(o -> o.setInputs(state));
+            }
             return state;
         }
         if (Math.abs(ctx.player().position().x + ctx.player().getDeltaMovement().x - destCenter.x) > 0.1 || Math.abs(ctx.player().position().z + ctx.player().getDeltaMovement().z - destCenter.z) > 0.1) {
@@ -179,6 +186,31 @@ public class MovementFall extends Movement {
             state.setTarget(new MovementTarget(RotationUtils.calcRotationFromVec3d(ctx.playerHead(), destCenterOffset, ctx.playerRotations()), false));
         }
         return state;
+    }
+
+    /**
+     * Where the path goes after this drop: from the landing block towards the step three on (or the last one there
+     * is), keeping the current view when that is within 25 degrees of it already.
+     */
+    private float naturalHeadingAfterFall(float current) {
+        var executor = baritone.getPathingBehavior().getCurrent();
+        if (executor == null) return current;
+        var movements = executor.getPath().movements();
+        int here = movements.indexOf(this);
+        if (here < 0) return current;
+        BlockPos ahead = null;
+        for (int i = here + 1; i < movements.size() && i <= here + 3; i++) ahead = movements.get(i).getDest();
+        double fromX = dest.getX() + .5, fromZ = dest.getZ() + .5;
+        if (ahead == null || ahead.getX() == dest.getX() && ahead.getZ() == dest.getZ()) {
+            // nothing after it: the drop itself
+            fromX = ctx.player().position().x;
+            fromZ = ctx.player().position().z;
+            ahead = dest;
+        }
+        double dx = ahead.getX() + .5 - fromX, dz = ahead.getZ() + .5 - fromZ;
+        if (Math.hypot(dx, dz) < .3) return current;
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        return Math.abs(Rotation.normalizeYaw(yaw - current)) < 25 ? current : yaw;
     }
 
     private Direction avoid() {
