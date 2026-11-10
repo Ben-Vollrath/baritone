@@ -760,8 +760,13 @@ public interface MovementHelper extends ActionCosts, Helper {
             var natural = naturalOwner.getNaturalMovementBehavior();
             float actual = ctx.playerRotations().getYaw(), wanted = rotation.getYaw();
             int side = ctx.player().onGround() ? natural.sideKey(actual, wanted) : 0;
-            rotation = new Rotation(natural.cameraYaw(actual, wanted), rotation.getPitch());
-            state.setTarget(new MovementTarget(rotation, false)).setInput(Input.MOVE_FORWARD, true);
+            // W goes where the camera looks, not along the checked line: if that runs over a drop, turn now and
+            // hold W until the view points somewhere safe
+            boolean safeAhead = !ctx.player().onGround() || naturalAheadSafe(ctx, actual);
+            float camera = natural.cameraYaw(actual, wanted, !safeAhead);
+            rotation = new Rotation(camera, rotation.getPitch());
+            state.setTarget(new MovementTarget(rotation, false))
+                    .setInput(Input.MOVE_FORWARD, safeAhead || naturalAheadSafe(ctx, camera));
             if (side != 0) {
                 double yaw = Math.toRadians(actual + 45 * side);
                 if (naturalStepClear(ctx, -Math.sin(yaw), Math.cos(yaw))) {
@@ -813,6 +818,21 @@ public interface MovementHelper extends ActionCosts, Helper {
             for (double ox : new double[]{-.3, .3}) for (double oz : new double[]{-.3, .3}) {
                 BlockPos corner = new BlockPos((int) Math.floor(x + ox), y, (int) Math.floor(z + oz));
                 for (int h = 0; h <= headroom; h++) if (!fullyPassable(ctx, corner.above(h))) return false;
+            }
+        }
+        return true;
+    }
+
+    /** Walking 1.5 blocks this way keeps the whole body over floor at most one block down (no ledge to fall off). */
+    static boolean naturalAheadSafe(IPlayerContext ctx, float yaw) {
+        var feet = ctx.player().position();
+        int y = ctx.playerFeet().getY();
+        double dx = -Math.sin(Math.toRadians(yaw)), dz = Math.cos(Math.toRadians(yaw));
+        for (double d = .3; d <= 1.5; d += .3) {
+            for (double ox : new double[]{-.3, .3}) for (double oz : new double[]{-.3, .3}) {
+                int bx = (int) Math.floor(feet.x + dx * d + ox), bz = (int) Math.floor(feet.z + dz * d + oz);
+                if (!canWalkOn(ctx, new BlockPos(bx, y - 1, bz)) && !canWalkOn(ctx, new BlockPos(bx, y - 2, bz))
+                        && !canWalkOn(ctx, new BlockPos(bx, y, bz))) return false;
             }
         }
         return true;

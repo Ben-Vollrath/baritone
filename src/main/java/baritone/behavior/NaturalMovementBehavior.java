@@ -57,6 +57,11 @@ public final class NaturalMovementBehavior extends Behavior {
      * a little short or long like a hand, then hold exactly there. LookBehavior applies these yaws as they are.
      */
     public float cameraYaw(float actual, float wanted) {
+        return cameraYaw(actual, wanted, false);
+    }
+
+    /** @param turnNow start the correction now, whatever the error (walking on the way it looks isn't safe) */
+    public float cameraYaw(float actual, float wanted, boolean turnNow) {
         int tick = ctx.player().tickCount;
         if (scriptedTick != tick - 1 && scriptedTick != tick) { // resume after other steps moved the camera
             flicking = false;
@@ -73,8 +78,8 @@ public final class NaturalMovementBehavior extends Behavior {
             holdYaw = flickEnd;
         }
         double error = net.minecraft.util.Mth.wrapDegrees(wanted - holdYaw);
-        double band = 4 + 4 * jobFraction(0x5ca11L);
-        if (Math.abs(error) > band) {
+        double band = 6 + 6 * jobFraction(0x5ca11L);
+        if (Math.abs(error) > band || turnNow && Math.abs(error) > 1) {
             flickStart = holdYaw;
             flickEnd = holdYaw + error * (.85 + .3 * flickRandom.nextDouble());
             double amplitude = Math.abs(flickEnd - flickStart);
@@ -95,7 +100,7 @@ public final class NaturalMovementBehavior extends Behavior {
     /** A/D while the camera holds: -1 left, 1 right, 0 neither. Pressed past a small error, released once it's gone. */
     public int sideKey(float actual, float wanted) {
         double error = net.minecraft.util.Mth.wrapDegrees(wanted - actual); // > 0: wanted is to the right
-        double press = 2.5 + 2.5 * jobFraction(0x51deL);
+        double press = 2 + 2 * jobFraction(0x51deL);
         if (flicking) sideKey = 0;
         else if (sideKey != 0 && (Math.abs(error) < 1.5 || Math.signum(error) != sideKey)) sideKey = 0;
         else if (sideKey == 0 && Math.abs(error) > press) sideKey = error > 0 ? 1 : -1;
