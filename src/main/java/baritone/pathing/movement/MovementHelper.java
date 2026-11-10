@@ -670,6 +670,7 @@ public interface MovementHelper extends ActionCosts, Helper {
         Baritone naturalOwner = null;
         int lookahead = 0;
         boolean farAim = false;
+        BlockPos stepDir = null;
         boolean naturalWalking = Baritone.settings().naturalMovement.value && state.getStatus() == baritone.api.pathing.movement.MovementStatus.RUNNING;
         if (naturalWalking) {
             var active = baritone.api.BaritoneAPI.getProvider().getBaritoneForPlayer(ctx.player());
@@ -678,6 +679,7 @@ public interface MovementHelper extends ActionCosts, Helper {
             if (executor != null) {
                 var movements = executor.getPath().movements();
                 int index = executor.getPosition();
+                if (index >= 0 && index < movements.size()) stepDir = movements.get(index).getDirection();
                 // Pressing into something: aim at the step itself until free (the line ahead scraped a wall).
                 boolean blocked = ctx.player().horizontalCollision;
                 if (!blocked && index >= 0 && index < movements.size() && naturalLookaheadSafe(ctx, movements.get(index))
@@ -739,6 +741,15 @@ public interface MovementHelper extends ActionCosts, Helper {
             double dx = (baritone.utils.RouteVariation.value(seed ^ 0x153abL, pos.getX(), pos.getZ()) - 0.5) * 0.28;
             double dz = (baritone.utils.RouteVariation.value(seed ^ 0x8ce12L, pos.getX(), pos.getZ()) - 0.5) * 0.28;
             point = point.add(dx, 0, dz);
+        }
+        if (naturalOwner != null && lookahead == 0 && !farAim && stepDir != null && (stepDir.getX() != 0 || stepDir.getZ() != 0)) {
+            // Nothing further to look at: look on along the step's direction, at least 2.5 blocks out, the way people
+            // look where they are going; aiming at a block center a step away swings the view as it comes close.
+            var feet = ctx.player().position();
+            double len = Math.hypot(stepDir.getX(), stepDir.getZ());
+            double ux = stepDir.getX() / len, uz = stepDir.getZ() / len;
+            double ahead = (point.x - feet.x) * ux + (point.z - feet.z) * uz;
+            if (ahead < 2.5) point = point.add(ux * (2.5 - ahead), 0, uz * (2.5 - ahead));
         }
         if (naturalOwner != null) naturalOwner.getNaturalMovementBehavior().observeSteering(lookahead, point.x, point.z);
         Rotation rotation = RotationUtils.calcRotationFromVec3d(ctx.playerHead(), point, ctx.playerRotations())
