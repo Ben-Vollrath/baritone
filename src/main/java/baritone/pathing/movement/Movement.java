@@ -176,14 +176,21 @@ public abstract class Movement implements IMovement, MovementHelper {
 
     private boolean strafeThroughTurn(float desiredYaw, float actualYaw, boolean wantedSprint) {
         float wantX = (float) Math.sin(Math.toRadians(desiredYaw)), wantZ = (float) Math.cos(Math.toRadians(desiredYaw));
-        // the key combination whose direction is closest to the wanted one; never backwards
+        // the key combination closest to the wanted direction whose next footprint is clear (within 60 degrees of
+        // it, so an edge never makes the body head elsewhere); never backwards
         var selection = MovementOption.getOptions((float) Math.sin(Math.toRadians(actualYaw)),
                         (float) Math.cos(Math.toRadians(actualYaw)), false)
                 .filter(option -> option.input1() != Input.MOVE_BACK)
-                .max(Comparator.comparingDouble(option -> (option.motionX() * wantX + option.motionZ() * wantZ)
-                        / Math.hypot(option.motionX(), option.motionZ()))).orElseThrow();
-        double length = Math.hypot(selection.motionX(), selection.motionZ());
-        if (!MovementHelper.naturalStepClear(ctx, -selection.motionX() / length, selection.motionZ() / length)) return false;
+                .filter(option -> (option.motionX() * wantX + option.motionZ() * wantZ)
+                        / Math.hypot(option.motionX(), option.motionZ()) > .5)
+                .sorted(Comparator.comparingDouble(option -> -(option.motionX() * wantX + option.motionZ() * wantZ)
+                        / Math.hypot(option.motionX(), option.motionZ())))
+                .filter(option -> {
+                    double length = Math.hypot(option.motionX(), option.motionZ());
+                    return MovementHelper.naturalStepClear(ctx, -option.motionX() / length, option.motionZ() / length);
+                })
+                .findFirst().orElse(null);
+        if (selection == null) return false;
         for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT})
             currentState.setInput(input, false);
         selection.setInputs(currentState);
