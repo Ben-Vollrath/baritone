@@ -208,7 +208,8 @@ public class MovementAscend extends Movement {
         double sideDist = zAxis * Math.abs((dest.getX() + 0.5D) - ctx.player().position().x) + xAxis * Math.abs((dest.getZ() + 0.5D) - ctx.player().position().z);
 
         double lateralMotion = xAxis * ctx.player().getDeltaMovement().z + zAxis * ctx.player().getDeltaMovement().x;
-        if (Math.abs(lateralMotion) > 0.1) {
+        // natural steering bends the run into the step (A/D, looking ahead), so some sideways motion is normal there
+        if (Math.abs(lateralMotion) > (Baritone.settings().naturalMovement.value ? 0.2 : 0.1)) {
             return state;
         }
 
