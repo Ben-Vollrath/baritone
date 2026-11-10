@@ -389,10 +389,14 @@ public class PathExecutor implements IPathExecutor, Helper {
             return true;
         }
 
-        // People sprint-jump up steps and run down them; only a descend whose overshoot is dangerous slows down.
+        // People sprint-jump up steps and run down them. Only where overshooting is safe: the ground goes on past the
+        // top of the step (a sprinting ascend onto a ledge carries on over its far edge), and a descend's safe mode.
         if (Baritone.settings().naturalMovement.value && !ctx.player().isInWater()) {
             if (current instanceof MovementAscend) {
-                return true;
+                BlockPos top = current.getDest();
+                BlockPos past = top.offset(top.getX() - current.getSrc().getX(), 0, top.getZ() - current.getSrc().getZ());
+                return MovementHelper.canWalkOn(ctx, past.below()) && MovementHelper.canWalkThrough(ctx, new BetterBlockPos(past))
+                        && MovementHelper.canWalkThrough(ctx, new BetterBlockPos(past.above()));
             }
             if (current instanceof MovementDescend && !((MovementDescend) current).safeMode()) {
                 return true;

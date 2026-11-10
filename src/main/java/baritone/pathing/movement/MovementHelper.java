@@ -816,7 +816,8 @@ public interface MovementHelper extends ActionCosts, Helper {
         for (double x : new double[]{box.minX, box.maxX}) for (double z : new double[]{box.minZ, box.maxZ}) {
             var pos = new BlockPos((int) Math.floor(x), floor, (int) Math.floor(z));
             var below = ctx.world().getBlockState(pos);
-            if (!below.isFaceSturdy(ctx.world(), pos, Direction.UP) || avoidWalkingInto(below)) return false;
+            // walkable, not only full blocks: the hub's roads are dirt paths, slabs and farmland
+            if (!canWalkOn(ctx, pos) || avoidWalkingInto(below)) return false;
         }
         return true;
     }

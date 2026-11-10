@@ -185,9 +185,13 @@ public final class NaturalMovementBehavior extends Behavior {
             if (!player.onGround()) leftGround = true;
             if (player.tickCount - hopStarted > 30 || leftGround && player.onGround()) {
                 hopping = false;
-                nextJump = player.tickCount + (random.nextDouble() < 0.90 ? (int) (random.nextDouble() * 3) : 4 + (int) (random.nextDouble() * 7));
+                // Recorded players chain hops by keeping space down: the next jump leaves on the landing tick, so the
+                // ground's friction never eats the speed (64% of their hops follow straight on). Now and then a tick
+                // later, sometimes a short break.
+                double pause = random.nextDouble();
+                nextJump = player.tickCount + (pause < 0.75 ? 0 : pause < 0.9 ? 1 : 3 + (int) (random.nextDouble() * 6));
             }
-            return;
+            if (hopping || player.tickCount < nextJump) return;
         }
         if (player.tickCount < nextJump || !player.onGround() || !player.isSprinting()
                 || player.getDeltaMovement().horizontalDistanceSqr() < 0.015 || player.getFoodData().getFoodLevel() <= 10
@@ -209,20 +213,27 @@ public final class NaturalMovementBehavior extends Behavior {
                 || !MovementHelper.naturalLookaheadSafe(ctx, current)) return;
         if (current.getDirection().getY() != 0) return;
         int ground = current.getSrc().y;
-        // The path keeps going flat for a few blocks (straight and diagonal steps mixed, like a road at an angle) ...
+        // The path keeps going for a few blocks: straight and diagonal steps (a road at an angle mixes them) and
+        // single steps up or down, which a sprint jump clears like people do on the hub's slopes ...
         java.util.Set<Long> cells = new java.util.HashSet<>();
         double covered = 0;
         for (int i = index; covered < 5; i++) {
             if (i >= movements.size()) return;
             var next = movements.get(i);
-            if (!(next instanceof MovementTraverse || next instanceof MovementDiagonal)
-                    || !MovementHelper.naturalLookaheadSafe(ctx, next) || next.getDest().y != ground) return;
+            boolean flat = (next instanceof MovementTraverse || next instanceof MovementDiagonal)
+                    && MovementHelper.naturalLookaheadSafe(ctx, next);
+            boolean step = (next instanceof baritone.pathing.movement.movements.MovementAscend
+                    || next instanceof baritone.pathing.movement.movements.MovementDescend)
+                    && Math.abs(next.getDirection().getY()) == 1;
+            if (!(flat || step && i > index) || Math.abs(next.getDest().y - ground) > 1) return;
             cells.add(MovementHelper.columnKey(next.getSrc()));
             cells.add(MovementHelper.columnKey(next.getDest()));
             covered += Math.hypot(next.getDirection().getX(), next.getDirection().getZ());
         }
-        // ... and the flight stays over it: along the facing (the jump boost goes that way) and the motion,
-        // about one sprint jump (12 ticks) far, with solid floor below and room for the head at the top of the arc.
+        // ... and the flight is over open ground (people hop wherever the ground ahead is clear, not only along the
+        // path's blocks): along the facing (the jump boost goes that way) and the motion, about one sprint jump
+        // (12 ticks) far, the whole body over solid floor at most one block up or down (up only from 1.5 blocks
+        // out, once the jump is high enough) with the body's room above it, landing next to the path.
         decision = "runway obstacle, turn or edge";
         var feet = player.position();
         double yaw = Math.toRadians(player.getYRot());
@@ -230,10 +241,25 @@ public final class NaturalMovementBehavior extends Behavior {
         double speed = Math.hypot(motion.x, motion.z);
         double[][] lines = {{-Math.sin(yaw), Math.cos(yaw)}, {motion.x / speed, motion.z / speed}};
         for (double[] line : lines) {
-            if (!MovementHelper.naturalLineOnPath(ctx, feet, feet.x + line[0] * 4.5, feet.z + line[1] * 4.5, ground, cells, 2)) return;
-            for (double d = .5; d <= 4.5; d += .5) {
-                if (!hopFloorSupported(BlockPos.containing(feet.x + line[0] * d, ground, feet.z + line[1] * d))) return;
+            for (double d = .25; d <= 4.5; d += .25) {
+                double x = feet.x + line[0] * d, z = feet.z + line[1] * d;
+                for (double ox : new double[]{-.3, .3}) for (double oz : new double[]{-.3, .3}) {
+                    BlockPos cell = BlockPos.containing(x + ox, ground, z + oz);
+                    BlockPos floor = d >= 1.5 && hopFloorSupported(cell.above()) ? cell.above()
+                            : hopFloorSupported(cell) ? cell : hopFloorSupported(cell.below()) ? cell.below() : null;
+                    if (floor == null) { decision = "flight: no floor " + (line == lines[0] ? "ahead" : "along motion"); return; }
+                    // the body's two blocks; a ceiling above that only cuts the jump short (people hop under them too)
+                    for (int h = 0; h <= 1; h++) if (!MovementHelper.fullyPassable(ctx, floor.above(h)) && !(h == 0 && lowFloor(floor))) { decision = "flight: body blocked by " + net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(ctx.world().getBlockState(floor.above(h)).getBlock()).getPath(); return; }
+                    if (floor.getY() < ground && !MovementHelper.fullyPassable(ctx, cell)) { decision = "flight: body blocked"; return; }
+                }
             }
+            double landX = feet.x + line[0] * 4.5, landZ = feet.z + line[1] * 4.5;
+            boolean nearPath = false;
+            for (long key : cells) {
+                BlockPos column = BlockPos.of(key);
+                if (Math.hypot(column.getX() + .5 - landX, column.getZ() + .5 - landZ) <= 1.2) nearPath = true;
+            }
+            if (!nearPath) { decision = "flight: lands off the path"; return; }
         }
         decision = "turning";
         double cos = lines[0][0] * lines[1][0] + lines[0][1] * lines[1][1];
@@ -247,9 +273,16 @@ public final class NaturalMovementBehavior extends Behavior {
         input.setInputForceState(Input.JUMP, true);
     }
 
+    /** A bottom slab or similar under half a block: standing on it, it is the floor, not an obstacle. */
+    private boolean lowFloor(BlockPos pos) {
+        var shape = ctx.world().getBlockState(pos).getCollisionShape(ctx.world(), pos);
+        return !shape.isEmpty() && shape.max(Direction.Axis.Y) <= .5;
+    }
+
+    /** Something to land on below {@code pos}: anything walkable (slabs, paths, farmland, stairs too), not slippery. */
     private boolean hopFloorSupported(BlockPos pos) {
         var floor = ctx.world().getBlockState(pos.below());
-        if (!floor.isFaceSturdy(ctx.world(), pos.below(), Direction.UP) || MovementHelper.avoidWalkingInto(floor)
+        if (!MovementHelper.canWalkOn(ctx, pos.below()) || MovementHelper.avoidWalkingInto(floor)
                 || floor.is(Blocks.ICE) || floor.is(Blocks.PACKED_ICE) || floor.is(Blocks.BLUE_ICE)
                 || floor.is(Blocks.HONEY_BLOCK) || floor.is(Blocks.SLIME_BLOCK)) return false;
         return true;
