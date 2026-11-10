@@ -248,6 +248,14 @@ public final class NaturalMovementBehavior extends Behavior {
         for (double[] line : lines) {
             for (double d = .25; d <= 4.5; d += .25) {
                 double x = feet.x + line[0] * d, z = feet.z + line[1] * d;
+                // the whole flight follows the path, not only the landing: a hop cutting across a bend carries the
+                // body past it, and turning back round to the path looks wrong
+                boolean beside = false;
+                for (long key : cells) {
+                    BlockPos column = BlockPos.of(key);
+                    if (Math.hypot(column.getX() + .5 - x, column.getZ() + .5 - z) <= 1.5) { beside = true; break; }
+                }
+                if (!beside) { decision = "flight: leaves the path"; return; }
                 for (double ox : new double[]{-.3, .3}) for (double oz : new double[]{-.3, .3}) {
                     BlockPos cell = BlockPos.containing(x + ox, ground, z + oz);
                     BlockPos floor = d >= 1.5 && hopFloorSupported(cell.above()) ? cell.above()

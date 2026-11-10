@@ -17,6 +17,7 @@
 
 package baritone.pathing.movement.movements;
 
+import baritone.Baritone;
 import baritone.api.IBaritone;
 import baritone.api.pathing.movement.MovementStatus;
 import baritone.api.utils.BetterBlockPos;
@@ -140,6 +141,22 @@ public class MovementFall extends Movement {
             }
         }
         Vec3 destCenter = VecUtils.getBlockPosCenter(dest); // we are moving to the 0.5 center not the edge (like if we were falling on a ladder)
+        if (Baritone.settings().naturalMovement.value && targetRotation == null && avoid() == null
+                && (dest.getX() != src.getX() || dest.getZ() != src.getZ())) {
+            // Dropping down a few blocks, people keep looking the way they are going. Aiming at the landing block's
+            // center (nudged back towards the start) swings the view round by up to 180 degrees once the body drifts
+            // past it, and stares at the feet. Look along the drop instead and let go of W past the center; the drift
+            // that is left still lands on the same block.
+            double dx = dest.getX() - src.getX(), dz = dest.getZ() - src.getZ(), len = Math.hypot(dx, dz);
+            double past = ((ctx.player().position().x - destCenter.x) * dx + (ctx.player().position().z - destCenter.z) * dz) / len;
+            float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+            // already looking roughly that way (running off the edge): leave the view where it is
+            float current = ctx.playerRotations().getYaw();
+            boolean roughly = Math.abs(Rotation.normalizeYaw(yaw - current)) < 25;
+            state.setTarget(new MovementTarget(new Rotation(roughly ? current : yaw, MovementHelper.naturalWalkingPitch(ctx)), false));
+            state.setInput(Input.MOVE_FORWARD, past < -.15 && (roughly || Math.abs(Rotation.normalizeYaw(yaw - current)) < 30));
+            return state;
+        }
         if (Math.abs(ctx.player().position().x + ctx.player().getDeltaMovement().x - destCenter.x) > 0.1 || Math.abs(ctx.player().position().z + ctx.player().getDeltaMovement().z - destCenter.z) > 0.1) {
             if (!ctx.player().onGround() && Math.abs(ctx.player().getDeltaMovement().y) > 0.4) {
                 state.setInput(Input.SNEAK, true);
