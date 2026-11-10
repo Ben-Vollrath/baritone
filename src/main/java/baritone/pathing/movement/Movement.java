@@ -145,11 +145,15 @@ public abstract class Movement implements IMovement, MovementHelper {
                 double remainingTurn = Math.abs(Rotation.normalizeYaw(rotation.getYaw() - actual.getYaw()));
                 boolean ready = baritone.getLookBehavior().isReadyForMovement(rotation);
                 if (!ready || remainingTurn > 15) {
-                    if (ready && Baritone.settings().naturalMovement.value && remainingTurn < 75
+                    // People keep running through a turn: W (and sprint) stay down, A/D bends the path
+                    // while the mouse catches up. Only on flat moves, where the next footprint can be checked.
+                    boolean wantedSprint = Boolean.TRUE.equals(currentState.getInputStates().get(Input.SPRINT));
+                    if (ready && Baritone.settings().naturalMovement.value && remainingTurn < 100
                             && currentState.getStatus() == MovementStatus.RUNNING
                             && !currentState.getTarget().hasToForceRotations()
-                            && this instanceof baritone.pathing.movement.movements.MovementTraverse
-                            && strafeThroughTurn(rotation.getYaw(), actual.getYaw())) return;
+                            && (this instanceof baritone.pathing.movement.movements.MovementTraverse
+                                || this instanceof baritone.pathing.movement.movements.MovementDiagonal)
+                            && strafeThroughTurn(rotation.getYaw(), actual.getYaw(), wantedSprint)) return;
                     for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT,
                             Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT}) {
                         currentState.setInput(input, false);
@@ -170,11 +174,14 @@ public abstract class Movement implements IMovement, MovementHelper {
         return currentState.getStatus();
     }
 
-    private boolean strafeThroughTurn(float desiredYaw, float actualYaw) {
+    private boolean strafeThroughTurn(float desiredYaw, float actualYaw, boolean wantedSprint) {
+        float wantX = (float) Math.sin(Math.toRadians(desiredYaw)), wantZ = (float) Math.cos(Math.toRadians(desiredYaw));
+        // the key combination whose direction is closest to the wanted one; never backwards
         var selection = MovementOption.getOptions((float) Math.sin(Math.toRadians(actualYaw)),
                         (float) Math.cos(Math.toRadians(actualYaw)), false)
-                .min(Comparator.comparing(option -> option.distanceToSq((float) Math.sin(Math.toRadians(desiredYaw)),
-                        (float) Math.cos(Math.toRadians(desiredYaw))))).orElseThrow();
+                .filter(option -> option.input1() != Input.MOVE_BACK)
+                .max(Comparator.comparingDouble(option -> (option.motionX() * wantX + option.motionZ() * wantZ)
+                        / Math.hypot(option.motionX(), option.motionZ()))).orElseThrow();
         double length = Math.hypot(selection.motionX(), selection.motionZ());
         double dx = -selection.motionX() / length * .38, dz = selection.motionZ() / length * .38;
         var box = ctx.player().getBoundingBox().expandTowards(dx, 0, dz);
@@ -188,6 +195,7 @@ public abstract class Movement implements IMovement, MovementHelper {
         for (Input input : new Input[]{Input.MOVE_FORWARD, Input.MOVE_BACK, Input.MOVE_LEFT, Input.MOVE_RIGHT, Input.JUMP, Input.SPRINT})
             currentState.setInput(input, false);
         selection.setInputs(currentState);
+        if (wantedSprint && selection.input1() == Input.MOVE_FORWARD) currentState.setInput(Input.SPRINT, true);
         return true;
     }
 

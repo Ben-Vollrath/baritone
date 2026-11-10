@@ -374,6 +374,16 @@ public class PathExecutor implements IPathExecutor, Helper {
             return true;
         }
 
+        // People sprint-jump up steps and run down them; only a descend whose overshoot is dangerous slows down.
+        if (Baritone.settings().naturalMovement.value && !ctx.player().isInWater()) {
+            if (current instanceof MovementAscend) {
+                return true;
+            }
+            if (current instanceof MovementDescend && !((MovementDescend) current).safeMode()) {
+                return true;
+            }
+        }
+
         // however, descend and ascend don't request sprinting, because they don't know the context of what movement comes after it
         if (current instanceof MovementDescend) {
 
