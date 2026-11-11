@@ -145,6 +145,70 @@ final class MobFightModel {
         return closest;
     }
 
+    // ---- Hunting: mobs that don't come for the player ----------------------------------------------------------
+    // Hypixel's low-level mobs (the Hub Graveyard's Lv1 zombies) wander and leave the player alone. Against them the
+    // user ran straight in and hit, instead of circling: the Graveyard recording of 2026-11-11 (171 s, 38 kills).
+
+    /** A mob that came this much closer to the player on its own over {@link #CHASE_TICKS} is chasing. */
+    static final double CHASE_CLOSING = .6;
+    static final int CHASE_TICKS = 10;
+
+    /** How far a mob walked toward the player between two sightings, from its own movement. */
+    static double closing(double mobX0, double mobZ0, double mobX1, double mobZ1, double playerX, double playerZ) {
+        double toX = playerX - mobX1, toZ = playerZ - mobZ1;
+        double size = Math.hypot(toX, toZ);
+        if (size < 1e-6) return 0;
+        return ((mobX1 - mobX0) * toX + (mobZ1 - mobZ0) * toZ) / size;
+    }
+
+    /**
+     * Keys against a mob that isn't chasing, by its range, as {forward (+1 W, 0, -1 S), side (+1 A, 0, -1 D)}.
+     * Recorded: from 3 blocks out W 61–71% (sprinting 78–99%); at 2–3 blocks W 41%, nothing about 30%, A or D about a
+     * quarter; under 2 blocks W 41% (pressing into it), nothing 25%, A/D about a third, S almost never.
+     */
+    static int[] huntKeys(double range, ForkableRandom random) {
+        double roll = random.nextDouble();
+        if (range > 3) return roll < .85 ? new int[]{1, 0} : new int[]{1, roll < .925 ? 1 : -1};
+        if (range > 2) {
+            if (roll < .42) return new int[]{1, 0};
+            if (roll < .72) return new int[]{0, 0};
+            if (roll < .86) return new int[]{1, roll < .79 ? 1 : -1};
+            return new int[]{0, roll < .93 ? 1 : -1};
+        }
+        if (roll < .38) return new int[]{1, 0};
+        if (roll < .66) return new int[]{0, 0};
+        if (roll < .97) return new int[]{0, roll < .82 ? 1 : -1};
+        return new int[]{-1, 0};
+    }
+
+    /** Hunting key runs: a person holds a choice for about half a second. */
+    static int huntRun(ForkableRandom random) {
+        return 6 + (int) (random.nextDouble() * 14);
+    }
+
+    /** Clicking against a mob that isn't chasing: about 8 a second within 3 blocks, 4 at 4–5 blocks, none beyond. */
+    static int huntClickGap(double range, ForkableRandom random) {
+        if (range <= 3) return clickGap(random);
+        return 4 + (int) (random.nextDouble() * 3);
+    }
+
+    /**
+     * Hunting: how far the view may drift off a mob before it corrects, in degrees. Most of the mob's angular
+     * half-width (a body is about .6 wide), at least 2.5: the user's view stayed within 3 degrees of the nearest mob
+     * half the time, 17 at most nine times in ten.
+     */
+    static double huntYawDrift(double range) {
+        return Math.max(2.5, Math.toDegrees(Math.atan2(.3, Math.max(.5, range))) * .8);
+    }
+
+    /** Hunting: pitch to a point {@code drop} blocks below the eyes at this horizontal range, kept to -10..35. */
+    static double huntPitch(double drop, double range) {
+        return Math.max(-10, Math.min(35, Math.toDegrees(Math.atan2(drop, Math.max(.3, range)))));
+    }
+
+    /** Where clicking starts against a mob that isn't chasing. */
+    static final double HUNT_CLICK_FROM = 4.6;
+
     /** Side to strafe to when a run ends, as +1 for left: usually the side with more room, and otherwise the other. */
     static int nextSide(int side, double leftClearance, double rightClearance, ForkableRandom random) {
         int roomier = leftClearance >= rightClearance ? 1 : -1;
